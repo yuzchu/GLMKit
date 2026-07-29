@@ -80,6 +80,8 @@ public class LocalApiGateway {
         boolean onText(String delta) throws Exception;
         /** 流式推理增量（reasoning content） */
         boolean onReasoning(String delta) throws Exception;
+        /** 流式函数调用增量（tool_calls delta JSON） */
+        default boolean onToolCalls(String deltaJson) throws Exception { return true; }
         /** 客户端是否已断开 */
         boolean isCancelled();
     }
@@ -96,10 +98,11 @@ public class LocalApiGateway {
         public final int maxTokens;
         public final double topP;
         public final String[] stop;
+        public final JSONObject rawRequest;  // 原始请求 JSON，用于透传额外参数
 
         public CompletionRequest(String requestId, String model, JSONArray messages,
                                  boolean stream, double temperature, int maxTokens,
-                                 double topP, String[] stop) {
+                                 double topP, String[] stop, JSONObject rawRequest) {
             this.requestId = requestId;
             this.model = model;
             this.messages = messages;
@@ -108,6 +111,7 @@ public class LocalApiGateway {
             this.maxTokens = maxTokens;
             this.topP = topP;
             this.stop = stop;
+            this.rawRequest = rawRequest;
         }
     }
 
@@ -117,14 +121,21 @@ public class LocalApiGateway {
         public final String finishReason;
         public final int promptTokens;
         public final int completionTokens;
+        public final JSONArray toolCalls;  // GLM 函数调用 (null 表示无)
 
         public CompletionResult(String content, String reasoning, String finishReason,
                                 int promptTokens, int completionTokens) {
+            this(content, reasoning, finishReason, promptTokens, completionTokens, null);
+        }
+
+        public CompletionResult(String content, String reasoning, String finishReason,
+                                int promptTokens, int completionTokens, JSONArray toolCalls) {
             this.content = content;
             this.reasoning = reasoning;
             this.finishReason = finishReason;
             this.promptTokens = promptTokens;
             this.completionTokens = completionTokens;
+            this.toolCalls = toolCalls;
         }
     }
 
@@ -438,7 +449,7 @@ public class LocalApiGateway {
         JSONObject resp = new JSONObject();
         try {
             resp.put("module", "GLMKit");
-            resp.put("version", "1.0.5");
+            resp.put("version", "1.0.6");
             resp.put("gateway_running", isRunning());
             resp.put("listen_port", listenPort);
             resp.put("active_connections", activeConnections.get());
@@ -521,7 +532,7 @@ public class LocalApiGateway {
                 + "-" + (int)(Math.random() * 100000);
 
         CompletionRequest completionReq = new CompletionRequest(
-            requestId, model, messages, stream, temperature, maxTokens, topP, stop);
+            requestId, model, messages, stream, temperature, maxTokens, topP, stop, req);
 
         if (stream) {
             handleStreamCompletion(completionReq, os);
@@ -551,6 +562,9 @@ public class LocalApiGateway {
             message.put("content", result.content != null ? result.content : "");
             if (result.reasoning != null && !result.reasoning.isEmpty()) {
                 message.put("reasoning_content", result.reasoning);
+            }
+            if (result.toolCalls != null && result.toolCalls.length() > 0) {
+                message.put("tool_calls", result.toolCalls);
             }
             choice.put("message", message);
             choice.put("finish_reason", result.finishReason != null ? result.finishReason : "stop");
@@ -623,6 +637,27 @@ public class LocalApiGateway {
                 choice.put("index", 0);
                 JSONObject d = new JSONObject();
                 d.put("reasoning_content", delta);
+                choice.put("delta", d);
+                choice.put("finish_reason", JSONObject.NULL);
+                choices.put(choice);
+                chunk.put("choices", choices);
+
+                return writeSseEvent(sos, chunk.toString());
+            }
+
+            @Override
+            public boolean onToolCalls(String deltaJson) throws Exception {
+                JSONObject chunk = new JSONObject();
+                chunk.put("id", req.requestId);
+                chunk.put("object", "chat.completion.chunk");
+                chunk.put("created", System.currentTimeMillis() / 1000);
+                chunk.put("model", req.model);
+
+                JSONArray choices = new JSONArray();
+                JSONObject choice = new JSONObject();
+                choice.put("index", 0);
+                JSONObject d = new JSONObject();
+                d.put("tool_calls", new JSONArray(deltaJson));
                 choice.put("delta", d);
                 choice.put("finish_reason", JSONObject.NULL);
                 choices.put(choice);

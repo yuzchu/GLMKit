@@ -136,7 +136,11 @@ public class GlmBackend implements LocalApiGateway.Backend {
 
     private JSONObject buildGlmRequestBody(LocalApiGateway.CompletionRequest req) throws Exception {
         JSONObject payload = new JSONObject();
-        payload.put("model", mapModel(req.model));
+        String glmModel = mapModel(req.model);
+        payload.put("model", glmModel);
+        if (!glmModel.equals(req.model)) {
+            log("  模型映射: " + req.model + " → " + glmModel);
+        }
         payload.put("stream", req.stream);
 
         // 消息转换 — JSONArray 透传 (已是 OpenAI 格式)
@@ -152,14 +156,41 @@ public class GlmBackend implements LocalApiGateway.Backend {
         if (req.topP >= 0) {
             payload.put("top_p", req.topP);
         }
+        if (req.stop != null && req.stop.length > 0) {
+            JSONArray stopArr = new JSONArray();
+            for (String s : req.stop) stopArr.put(s);
+            payload.put("stop", stopArr);
+        }
 
         // GLM 特有: 启用思考链 (通过 model 名判断)
-        if (req.model != null && req.model.contains("thinking")) {
+        if (req.model != null && (req.model.contains("thinking")
+                || req.model.contains("reasoner")
+                || req.model.startsWith("o1"))) {
             payload.put("thinking", new JSONObject().put("type", "enabled"));
         }
 
         // 请求 ID
         payload.put("request_id", "glmkit-" + System.currentTimeMillis());
+
+        // 透传 GLM 兼容的额外参数
+        if (req.rawRequest != null) {
+            // tools / tool_choice (函数调用)
+            JSONArray tools = req.rawRequest.optJSONArray("tools");
+            if (tools != null) payload.put("tools", tools);
+            String toolChoice = req.rawRequest.optString("tool_choice", null);
+            if (toolChoice != null) payload.put("tool_choice", toolChoice);
+            else if (req.rawRequest.has("tool_choice")) {
+                payload.put("tool_choice", req.rawRequest.get("tool_choice"));
+            }
+            // response_format (JSON 模式)
+            JSONObject respFormat = req.rawRequest.optJSONObject("response_format");
+            if (respFormat != null) payload.put("response_format", respFormat);
+            // seed (可复现输出)
+            if (req.rawRequest.has("seed")) payload.put("seed", req.rawRequest.get("seed"));
+            // user (用户标识)
+            String user = req.rawRequest.optString("user", null);
+            if (user != null) payload.put("user", user);
+        }
 
         return payload;
     }
@@ -168,14 +199,59 @@ public class GlmBackend implements LocalApiGateway.Backend {
         if (openaiModel == null || openaiModel.isEmpty()) {
             return DEFAULT_GLM_MODEL;
         }
-        // 直接透传 — GLM 模型名本身就是 OpenAI 兼容的
-        // 常见映射: gpt-4 → glm-4, gpt-3.5-turbo → glm-3-turbo
+        // 已是 GLM 模型名，直接透传
+        if (openaiModel.startsWith("glm-") || openaiModel.startsWith("codegeex-")) {
+            return openaiModel;
+        }
+        // OpenAI 模型名 → GLM 模型名映射
         switch (openaiModel) {
-            case "gpt-4":         return "glm-4";
-            case "gpt-4-turbo":   return "glm-4-plus";
-            case "gpt-3.5-turbo": return "glm-3-turbo";
-            case "gpt-4o":        return "glm-4v";
-            default:              return openaiModel;
+            // GPT-4 系列
+            case "gpt-4":
+            case "gpt-4-1106-preview":
+            case "gpt-4-0125-preview":
+            case "gpt-4-vision-preview":
+                return "glm-4";
+            case "gpt-4-turbo":
+            case "gpt-4-turbo-preview":
+            case "gpt-4-2024-04-09":
+                return "glm-4-plus";
+            case "gpt-4o":
+                return "glm-4-plus";
+            case "gpt-4o-mini":
+            case "gpt-4-mini":
+                return "glm-4-flash";
+            // GPT-3.5 系列
+            case "gpt-3.5-turbo":
+            case "gpt-3.5":
+            case "gpt-3.5-turbo-1106":
+            case "gpt-3.5-turbo-0125":
+                return "glm-4-flash";
+            // Claude 系列
+            case "claude-3-opus":
+            case "claude-3-sonnet":
+                return "glm-4-plus";
+            case "claude-3-haiku":
+            case "claude-3-5-haiku":
+                return "glm-4-flash";
+            case "claude-3-5-sonnet":
+                return "glm-4-plus";
+            // Gemini 系列
+            case "gemini-pro":
+            case "gemini-1.5-pro":
+                return "glm-4-plus";
+            case "gemini-1.5-flash":
+                return "glm-4-flash";
+            // DeepSeek 系列
+            case "deepseek-chat":
+            case "deepseek-coder":
+                return "glm-4-flash";
+            default:
+                // 未知 gpt-* 模型 → glm-4
+                if (openaiModel.startsWith("gpt-")) return "glm-4";
+                if (openaiModel.startsWith("claude-")) return "glm-4-plus";
+                if (openaiModel.startsWith("gemini-")) return "glm-4";
+                // 其他：透传（可能是 GLM 新模型）
+                return openaiModel;
         }
     }
 
@@ -315,6 +391,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
         String content = message != null ? message.optString("content", "") : "";
         String reasoning = message != null ? message.optString("reasoning_content", null) : null;
         String finishReason = choice.optString("finish_reason", "stop");
+        JSONArray toolCalls = message != null ? message.optJSONArray("tool_calls") : null;
 
         // usage
         int promptTokens = 0, completionTokens = 0;
@@ -325,7 +402,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
         }
 
         return new LocalApiGateway.CompletionResult(
-            content, reasoning, finishReason, promptTokens, completionTokens);
+            content, reasoning, finishReason, promptTokens, completionTokens, toolCalls);
     }
 
     // ════════════════════════════════════════════════════════════
@@ -384,6 +461,12 @@ public class GlmBackend implements LocalApiGateway.Backend {
                 if (reasoningDelta != null && !reasoningDelta.isEmpty()) {
                     fullReasoning.append(reasoningDelta);
                     sink.onReasoning(reasoningDelta);
+                }
+
+                // 函数调用增量
+                JSONArray toolCallsDelta = delta.optJSONArray("tool_calls");
+                if (toolCallsDelta != null && toolCallsDelta.length() > 0) {
+                    sink.onToolCalls(toolCallsDelta.toString());
                 }
 
                 // finish_reason
