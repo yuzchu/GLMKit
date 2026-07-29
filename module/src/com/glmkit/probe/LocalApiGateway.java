@@ -154,7 +154,7 @@ public class LocalApiGateway {
     //  生命周期
     // ════════════════════════════════════════════════════════════
     public static void setListenPort(int port) {
-        if (port > 1024 && port <= 65535) {
+        if (port >= 1024 && port <= 65535) {
             listenPort = port;
         }
     }
