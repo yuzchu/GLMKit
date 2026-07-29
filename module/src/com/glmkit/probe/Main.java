@@ -322,6 +322,15 @@ public class Main implements IXposedHookLoadPackage {
                 }
 
                 Context ctx = appContext.getApplicationContext();
+
+                // 读取配置的端口
+                try {
+                    int port = ctx.getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE)
+                            .getInt("port", 8765);
+                    LocalApiGateway.setListenPort(port);
+                    log("配置监听端口: " + port);
+                } catch (Throwable ignored) {}
+
                 GlmBackend backend = new GlmBackend(getCapture());
                 LocalApiGateway.start(ctx, backend);
                 log("本地 API 网关已启动");

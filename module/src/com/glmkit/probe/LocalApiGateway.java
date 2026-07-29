@@ -136,6 +136,12 @@ public class LocalApiGateway {
     // ════════════════════════════════════════════════════════════
     //  生命周期
     // ════════════════════════════════════════════════════════════
+    public static void setListenPort(int port) {
+        if (port > 1024 && port < 65535) {
+            listenPort = port;
+        }
+    }
+
     public static void start(Context ctx, Backend b) {
         synchronized (LOCK) {
             if (running.get()) {
@@ -293,6 +299,21 @@ public class LocalApiGateway {
                                      byte[] body, OutputStream os) throws IOException {
         String logMsg = method + " " + path;
         log("请求: " + logMsg);
+
+        // CORS preflight
+        if ("OPTIONS".equals(method)) {
+            StringBuilder cors = new StringBuilder();
+            cors.append("HTTP/1.1 204 No Content\r\n");
+            cors.append("Access-Control-Allow-Origin: *\r\n");
+            cors.append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n");
+            cors.append("Access-Control-Allow-Headers: Content-Type, Authorization\r\n");
+            cors.append("Access-Control-Max-Age: 86400\r\n");
+            cors.append("Content-Length: 0\r\n");
+            cors.append("\r\n");
+            os.write(cors.toString().getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            return;
+        }
 
         // 健康检查
         if ("GET".equals(method) && "/healthz".equals(path)) {
