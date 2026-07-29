@@ -282,6 +282,9 @@ public class LocalApiGateway {
 
             String method = parts[0];
             String path = parts[1];
+            // 剥离查询参数 (e.g. /v1/models?foo=bar → /v1/models)
+            int qIdx = path.indexOf('?');
+            if (qIdx >= 0) path = path.substring(0, qIdx);
             String version = parts[2];
 
             // 读取 headers
@@ -457,7 +460,7 @@ public class LocalApiGateway {
         JSONObject resp = new JSONObject();
         try {
             resp.put("module", "GLMKit");
-            resp.put("version", "1.0.15");
+            resp.put("version", "1.0.16");
             resp.put("gateway_running", isRunning());
             resp.put("listen_port", listenPort);
             resp.put("active_connections", activeConnections.get());
@@ -585,7 +588,8 @@ public class LocalApiGateway {
                 message.put("tool_calls", result.toolCalls);
             }
             choice.put("message", message);
-            choice.put("finish_reason", result.finishReason != null ? result.finishReason : "stop");
+            choice.put("finish_reason", result.finishReason != null && !result.finishReason.isEmpty()
+                ? result.finishReason : "stop");
             choices.put(choice);
             resp.put("choices", choices);
 
@@ -727,7 +731,8 @@ public class LocalApiGateway {
             choice.put("index", 0);
             choice.put("delta", new JSONObject());
             choice.put("finish_reason",
-                result != null && result.finishReason != null ? result.finishReason : "stop");
+                result != null && result.finishReason != null && !result.finishReason.isEmpty()
+                    ? result.finishReason : "stop");
             choices.put(choice);
             finalChunk.put("choices", choices);
 
