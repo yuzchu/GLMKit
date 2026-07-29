@@ -554,7 +554,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
 
                 // finish_reason
                 String fr = choice.optString("finish_reason", null);
-                if (fr != null && !fr.equals("null")) {
+                if (fr != null && !fr.isEmpty() && !fr.equals("null")) {
                     finishReason = fr;
                 }
 
