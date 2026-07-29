@@ -36,7 +36,9 @@ public class GlmBackend implements LocalApiGateway.Backend {
 
     @Override
     public boolean isReady() {
-        return capture.getOkHttpClient() != null && capture.getBestBaseUrl() != null;
+        return capture.getOkHttpClient() != null
+            && capture.getBestBaseUrl() != null
+            && capture.getBestAuth() != null;
     }
 
     @Override
@@ -96,6 +98,10 @@ public class GlmBackend implements LocalApiGateway.Backend {
         Object response;
         try {
             response = executeOkHttpRequest(apiUrl, bodyStr, req.stream);
+        } catch (LocalApiGateway.GatewayException ge) {
+            lastError = ge.getMessage();
+            log("✗ OkHttp 请求失败: " + ge.getMessage());
+            throw ge; // 保留原始状态码
         } catch (Exception e) {
             lastError = e.getMessage();
             log("✗ OkHttp 请求失败: " + e.getMessage());
