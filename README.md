@@ -1,0 +1,291 @@
+# GLMKit — GLM 本地 API 反代增强模块
+
+[![Xposed](https://img.shields.io/badge/Xposed-Module-blue)]()
+[![Target](https://img.shields.io/badge/Target-智谱清言%20v3.7.0-green)]()
+[![API](https://img.shields.io/badge/API-OpenAI%20Compatible-orange)]()
+
+> 通过 Xposed Hook 智谱清言（com.zhipuai.qingyan），在设备本地启动 **OpenAI 兼容**的 HTTP API 反代服务器。
+> 无需修改目标应用、无需抓包，直接复用应用内的认证凭据和 OkHttp 客户端发起请求。
+
+## ✨ 功能特性
+
+- **OpenAI 兼容 API** — 支持 `/v1/chat/completions`、`/v1/models`、`/healthz` 路由
+- **SSE 流式响应** — 支持 `stream: true` 流式输出，兼容 ChatGPT 客户端
+- **自动捕获认证** — Hook OkHttp 拦截器，透明获取 GLM 认证 token 和 API 端点
+- **本地反代** — 所有请求在设备本地处理，不经过外部服务器
+- **前台保活** — 前台服务 + WakeLock 防止进程被冻结
+- **零配置** — 激活模块后打开智谱清言即可，无需手动输入 API Key
+
+## 📋 系统要求
+
+| 项目 | 要求 |
+|------|------|
+| Android 版本 | ≥ 7.0 (API 24) |
+| Xposed 框架 | LSPosed / EdXposed / Xposed |
+| 目标应用 | 智谱清言 v3.7.0+ |
+| 架构 | arm64-v8a / armeabi-v7a |
+
+## 🚀 快速开始
+
+### 1. 安装模块
+
+将构建好的 `glmkit-v1.0.0.apk` 安装到设备上。
+
+### 2. 激活模块
+
+1. 打开 LSPosed 管理器
+2. 在模块列表中找到 **GLMKit**
+3. 启用模块
+4. 在作用域中勾选 **智谱清言** (`com.zhipuai.qingyan`)
+5. 重启智谱清言（或重启设备）
+
+### 3. 使用 API
+
+模块激活后，打开智谱清言并登录。模块将自动在本地启动 API 服务器。
+
+**API 端点：**
+
+```
+http://127.0.0.1:8765/v1
+```
+
+**对话补全示例：**
+
+```bash
+curl http://127.0.0.1:8765/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "glm-4",
+    "messages": [
+      {"role": "user", "content": "你好"}
+    ],
+    "stream": false
+  }'
+```
+
+**流式响应示例：**
+
+```bash
+curl http://127.0.0.1:8765/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "glm-4",
+    "messages": [
+      {"role": "user", "content": "讲个故事"}
+    ],
+    "stream": true
+  }'
+```
+
+**模型列表：**
+
+```bash
+curl http://127.0.0.1:8765/v1/models
+```
+
+**健康检查：**
+
+```bash
+curl http://127.0.0.1:8765/healthz
+```
+
+### 4. 在第三方工具中使用
+
+| 工具 | 配置方式 |
+|------|----------|
+| OpenAI Python SDK | `base_url="http://127.0.0.1:8765/v1"`, `api_key="any"` |
+| LangChain | `OpenAI(base_url="http://127.0.0.1:8765/v1", api_key="any")` |
+| ChatGPT Next Web | API 地址设为 `http://127.0.0.1:8765` |
+| LobeChat | 自定义 OpenAI 提供商，地址 `http://127.0.0.1:8765/v1` |
+
+> **注意：** `api_key` 可以填任意值，认证由模块通过捕获的凭据自动处理。
+
+## 📁 项目结构
+
+```
+glm-mod/
+├── module/
+│   ├── AndroidManifest.xml          # 模块 Manifest
+│   ├── module.prop                  # Xposed 模块属性
+│   ├── libs/                        # 依赖 JAR（如有）
+│   ├── res/
+│   │   ├── values/strings.xml       # 英文字符串
+│   │   └── values-zh/strings.xml    # 中文字符串
+│   ├── src/com/glmkit/probe/
+│   │   ├── Main.java                # Xposed 入口，Hook 逻辑
+│   │   ├── GlmCapture.java          # 认证信息容器
+│   │   ├── LocalApiGateway.java     # 本地 HTTP 服务器 + OpenAI 兼容路由
+│   │   ├── GlmBackend.java          # GLM 后端实现
+│   │   ├── LocalApiKeepAliveService.java   # 前台保活服务
+│   │   ├── LocalApiKeepAliveActivity.java  # 保活控制界面
+│   │   ├── SettingsActivity.java    # 模块设置界面
+│   │   ├── XposedActivationProvider.java   # 激活检测 Provider
+│   │   └── XposedActivationReceiver.java   # 状态广播接收器
+│   └── xposed/
+│       ├── scope.list               # 作用域：com.zhipuai.qingyan
+│       └── java_init.list           # 入口类：com.glmkit.probe.Main
+└── scripts/
+    └── build.sh                     # 构建脚本
+```
+
+## 🔧 构建
+
+### 依赖
+
+- Android SDK (android-34)
+- JDK 8+
+- build-tools 34.0.0 (aapt2, d8)
+
+### 构建命令
+
+```bash
+export ANDROID_HOME=/path/to/android-sdk
+./scripts/build.sh
+```
+
+输出：`build/glmkit-v1.0.0.apk`
+
+## 🏗️ 架构设计
+
+```
+┌──────────────────────────────────────────────────────┐
+│                   智谱清言进程                        │
+│                                                      │
+│  ┌─────────────┐    ┌──────────────────────────┐    │
+│  │  GLM App     │    │  GLMKit Xposed Module    │    │
+│  │  (Retrofit   │    │                          │    │
+│  │   + OkHttp)  │    │  Main.java               │    │
+│  │              │    │    ├─ Hook OkHttp        │    │
+│  │              │    │    │  └─ 捕获 Auth/URL   │    │
+│  │              │    │    ├─ GlmCapture         │    │
+│  │              │    │    └─ LocalApiGateway    │    │
+│  │              │    │        └─ GlmBackend     │    │
+│  └─────────────┘    └──────────────────────────┘    │
+│                            │                         │
+│                     ┌──────▼──────┐                 │
+│                     │ HTTP Server  │                 │
+│                     │  port 8765   │                 │
+│                     └──────────────┘                 │
+└──────────────────────────────────────────────────────┘
+                            │
+                    ┌───────▼───────┐
+                    │  外部客户端    │
+                    │  (curl/SDK/   │
+                    │   LangChain)  │
+                    └───────────────┘
+```
+
+### 工作流程
+
+1. **Xposed 注入** — 模块在智谱清言进程启动时被加载
+2. **Hook OkHttp** — 拦截器捕获每次 HTTP 请求的认证头和 API 端点
+3. **启动网关** — 在设备本地 `127.0.0.1:8765` 启动 HTTP 服务器
+4. **请求转发** — 外部客户端发送 OpenAI 格式请求 → 网关转换为 GLM 格式 → 使用捕获的 OkHttp 客户端发送 → 解析 GLM 响应 → 转换回 OpenAI 格式返回
+5. **SSE 流式** — 支持流式响应，逐 token 转发
+
+## 🔌 API 路由
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/v1/chat/completions` | 对话补全（支持 `stream` 参数） |
+| GET | `/v1/models` | 返回可用模型列表 |
+| GET | `/healthz` | 健康检查 |
+
+### 请求格式（OpenAI 兼容）
+
+```json
+{
+  "model": "glm-4",
+  "messages": [
+    {"role": "system", "content": "你是一个助手"},
+    {"role": "user", "content": "你好"}
+  ],
+  "temperature": 0.7,
+  "stream": false
+}
+```
+
+### 响应格式（OpenAI 兼容）
+
+```json
+{
+  "id": "chatcmpl-xxx",
+  "object": "chat.completion",
+  "model": "glm-4",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "你好！有什么可以帮助你的？"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 15,
+    "total_tokens": 25
+  }
+}
+```
+
+## ⚙️ 配置
+
+### 端口配置
+
+默认端口 `8765`，可在 GLMKit 设置界面中修改（范围 1024-65535）。修改后需重启智谱清言生效。
+
+### 保活服务
+
+在 GLMKit 设置界面中可启用前台保活服务，防止智谱清言进程被系统冻结。
+
+## 📝 技术细节
+
+### Hook 策略
+
+与参考项目 Deekseep（hook 混淆类名）不同，本模块采用更干净的策略：
+
+- **Hook `okhttp3.OkHttpClient$Builder`** — 拦截器链构建过程
+- **Hook `okhttp3.Interceptor$Chain`** — 每次请求的拦截器链
+- **Hook `okhttp3.Request`** — 请求 URL 和头部信息
+
+这避免了依赖混淆类名，提高了对不同版本的兼容性。
+
+### 认证捕获
+
+通过 hook OkHttp 拦截器，在请求发出前捕获：
+- API 端点 URL（如 `https://chatglm.cn/chatglm/...`）
+- Authorization Bearer Token
+- Cookie
+- 自定义头部（如 `x-device-id`）
+
+捕获的信息存储在 `GlmCapture` 中，供 `GlmBackend` 使用。
+
+### 请求转发
+
+`GlmBackend` 使用捕获的 OkHttp 客户端（而非新建连接），确保：
+- 复用连接池
+- 继承 SSL/TLS 配置
+- 自动携带认证信息
+- 绕过任何应用内的请求签名/加密
+
+## 🐛 故障排除
+
+| 问题 | 解决方案 |
+|------|----------|
+| 模块未激活 | 检查 LSPosed 中模块是否启用，作用域是否包含智谱清言 |
+| API 不可达 | 确认智谱清言已打开并登录，检查端口是否被占用 |
+| 认证失败 | 重启智谱清言，确保已登录账号 |
+| 流式响应中断 | 启用保活服务，防止进程被冻结 |
+| 端口冲突 | 在设置界面修改端口号 |
+
+## 📄 许可证
+
+本项目仅供学习和研究使用。
+
+## 🙏 致谢
+
+- [Deekseep](https://github.com/lllucccian/Deekseep) — 参考项目，提供了 LocalApiGateway + Backend 架构思路
+- [Xposed](https://github.com/rovo89/Xposed) — Hook 框架
+- [LSPosed](https://github.com/LSPosed/LSPosed) — 现代 Xposed 框架实现

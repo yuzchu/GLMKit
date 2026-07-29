@@ -1,0 +1,4 @@
+build/
+debug.keystore
+*.apk
+!build/glmkit-v1.0.0.apk

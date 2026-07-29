@@ -1,0 +1,649 @@
+package com.glmkit.probe;
+
+import android.content.Context;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * 本地 API 网关 — OpenAI 兼容的 HTTP 服务器。
+ *
+ * 路由：
+ *   GET  /healthz              — 健康检查
+ *   GET  /v1/models            — 模型列表
+ *   POST /v1/chat/completions  — Chat Completions（支持 SSE 流式）
+ *
+ * 监听 127.0.0.1:8765（默认），仅本地访问。
+ */
+public class LocalApiGateway {
+
+    private static final String TAG = "GLMKit-Gateway";
+    private static final int DEFAULT_PORT = 8765;
+    private static final int SOCKET_BACKLOG = 16;
+    private static final int MAX_HEADER_BYTES = 65536;
+
+    private static final Object LOCK = new Object();
+    private static volatile ServerSocket serverSocket;
+    private static volatile Thread acceptThread;
+    private static volatile Backend backend;
+    private static volatile Context context;
+    private static final AtomicBoolean running = new AtomicBoolean(false);
+    private static final AtomicInteger activeConnections = new AtomicInteger(0);
+    private static final ExecutorService workerPool =
+            Executors.newCachedThreadPool(r -> {
+                Thread t = new Thread(r, "glmkit-worker");
+                t.setDaemon(true);
+                return t;
+            });
+    private static volatile int listenPort = DEFAULT_PORT;
+
+    // ════════════════════════════════════════════════════════════
+    //  Backend 接口
+    // ════════════════════════════════════════════════════════════
+    public interface Backend {
+        boolean isReady();
+        String readinessDetail();
+
+        /**
+         * 执行 chat completion。
+         *
+         * @param request  请求参数
+         * @param sink     流式回调（null 表示非流式）
+         * @return         完成结果
+         */
+        CompletionResult complete(CompletionRequest request, DeltaSink sink) throws Exception;
+    }
+
+    public interface DeltaSink {
+        /** 流式文本增量 */
+        boolean onText(String delta) throws Exception;
+        /** 流式推理增量（reasoning content） */
+        boolean onReasoning(String delta) throws Exception;
+        /** 客户端是否已断开 */
+        boolean isCancelled();
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  请求/结果类
+    // ════════════════════════════════════════════════════════════
+    public static final class CompletionRequest {
+        public final String requestId;
+        public final String model;
+        public final JSONArray messages;
+        public final boolean stream;
+        public final double temperature;
+        public final int maxTokens;
+        public final double topP;
+        public final String[] stop;
+
+        public CompletionRequest(String requestId, String model, JSONArray messages,
+                                 boolean stream, double temperature, int maxTokens,
+                                 double topP, String[] stop) {
+            this.requestId = requestId;
+            this.model = model;
+            this.messages = messages;
+            this.stream = stream;
+            this.temperature = temperature;
+            this.maxTokens = maxTokens;
+            this.topP = topP;
+            this.stop = stop;
+        }
+    }
+
+    public static final class CompletionResult {
+        public final String content;
+        public final String reasoning;
+        public final String finishReason;
+        public final int promptTokens;
+        public final int completionTokens;
+
+        public CompletionResult(String content, String reasoning, String finishReason,
+                                int promptTokens, int completionTokens) {
+            this.content = content;
+            this.reasoning = reasoning;
+            this.finishReason = finishReason;
+            this.promptTokens = promptTokens;
+            this.completionTokens = completionTokens;
+        }
+    }
+
+    public static class GatewayException extends Exception {
+        public final int httpStatus;
+        public final String errorCode;
+
+        public GatewayException(int httpStatus, String errorCode, String message) {
+            super(message);
+            this.httpStatus = httpStatus;
+            this.errorCode = errorCode;
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  生命周期
+    // ════════════════════════════════════════════════════════════
+    public static void start(Context ctx, Backend b) {
+        synchronized (LOCK) {
+            if (running.get()) {
+                log("网关已在运行");
+                return;
+            }
+            context = ctx.getApplicationContext();
+            backend = b;
+            running.set(true);
+
+            acceptThread = new Thread(() -> {
+                try {
+                    serverSocket = new ServerSocket();
+                    serverSocket.bind(new InetSocketAddress("127.0.0.1", listenPort),
+                                      SOCKET_BACKLOG);
+                    log("网关监听 127.0.0.1:" + listenPort);
+
+                    while (running.get() && !serverSocket.isClosed()) {
+                        try {
+                            Socket client = serverSocket.accept();
+                            activeConnections.incrementAndGet();
+                            workerPool.submit(() -> handleConnection(client));
+                        } catch (IOException e) {
+                            if (running.get()) {
+                                log("accept 异常: " + e.getMessage());
+                            }
+                        }
+                    }
+                } catch (Throwable t) {
+                    log("网关启动失败: " + t.getMessage());
+                } finally {
+                    running.set(false);
+                    log("网关线程退出");
+                }
+            }, "glmkit-accept");
+            acceptThread.setDaemon(true);
+            acceptThread.start();
+        }
+    }
+
+    public static void stop() {
+        synchronized (LOCK) {
+            running.set(false);
+            if (serverSocket != null) {
+                try { serverSocket.close(); } catch (IOException ignored) {}
+            }
+            if (acceptThread != null) {
+                acceptThread.interrupt();
+            }
+            log("网关已停止");
+        }
+    }
+
+    public static boolean isRunning() {
+        return running.get();
+    }
+
+    public static String endpoint() {
+        return "http://127.0.0.1:" + listenPort + "/v1";
+    }
+
+    public static String connectionInfo() {
+        StringBuilder sb = new StringBuilder();
+        sb.append(isRunning() ? "运行中" : "已停止");
+        sb.append(" | 端口: ").append(listenPort);
+        sb.append(" | 活跃连接: ").append(activeConnections.get());
+        if (backend != null) {
+            sb.append(" | 后端: ").append(backend.isReady() ? "就绪" : "未就绪");
+            if (!backend.isReady()) {
+                sb.append(" (").append(backend.readinessDetail()).append(")");
+            }
+        }
+        return sb.toString();
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  HTTP 连接处理
+    // ════════════════════════════════════════════════════════════
+    private static void handleConnection(Socket socket) {
+        try {
+            socket.setSoTimeout(120_000);
+            socket.setKeepAlive(true);
+
+            InputStream is = socket.getInputStream();
+            OutputStream os = socket.getOutputStream();
+
+            // 读取 HTTP 请求行
+            String requestLine = readLine(is);
+            if (requestLine == null || requestLine.isEmpty()) {
+                sendResponse(os, 400, "Bad Request", "text/plain", "Bad Request");
+                return;
+            }
+
+            String[] parts = requestLine.split(" ");
+            if (parts.length < 3) {
+                sendResponse(os, 400, "Bad Request", "text/plain", "Bad Request");
+                return;
+            }
+
+            String method = parts[0];
+            String path = parts[1];
+            String version = parts[2];
+
+            // 读取 headers
+            ConcurrentHashMap<String, String> headers = new ConcurrentHashMap<>();
+            int headerBytes = 0;
+            while (true) {
+                String line = readLine(is);
+                if (line == null || line.isEmpty()) break;
+                headerBytes += line.length() + 2;
+                if (headerBytes > MAX_HEADER_BYTES) {
+                    sendResponse(os, 431, "Headers Too Large", "text/plain", "Headers Too Large");
+                    return;
+                }
+                int colon = line.indexOf(':');
+                if (colon > 0) {
+                    String name = line.substring(0, colon).trim().toLowerCase();
+                    String value = line.substring(colon + 1).trim();
+                    headers.put(name, value);
+                }
+            }
+
+            // 读取 body（如果有 Content-Length）
+            String contentLengthStr = headers.get("content-length");
+            byte[] body = null;
+            if (contentLengthStr != null) {
+                int contentLength = Integer.parseInt(contentLengthStr);
+                if (contentLength > 0 && contentLength < 10 * 1024 * 1024) {
+                    body = new byte[contentLength];
+                    int read = 0;
+                    while (read < contentLength) {
+                        int n = is.read(body, read, contentLength - read);
+                        if (n < 0) break;
+                        read += n;
+                    }
+                }
+            }
+
+            // 路由
+            routeRequest(method, path, headers, body, os);
+
+        } catch (Throwable t) {
+            log("连接处理异常: " + t.getMessage());
+        } finally {
+            activeConnections.decrementAndGet();
+            try { socket.close(); } catch (IOException ignored) {}
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  路由
+    // ════════════════════════════════════════════════════════════
+    private static void routeRequest(String method, String path,
+                                     ConcurrentHashMap<String, String> headers,
+                                     byte[] body, OutputStream os) throws IOException {
+        String logMsg = method + " " + path;
+        log("请求: " + logMsg);
+
+        // 健康检查
+        if ("GET".equals(method) && "/healthz".equals(path)) {
+            JSONObject health = new JSONObject();
+            try {
+                health.put("status", "ok");
+                health.put("running", isRunning());
+                health.put("endpoint", endpoint());
+                health.put("activeConnections", activeConnections.get());
+                if (backend != null) {
+                    health.put("backendReady", backend.isReady());
+                    health.put("backendDetail", backend.readinessDetail());
+                }
+            } catch (Exception ignored) {}
+            sendResponse(os, 200, "OK", "application/json", health.toString());
+            return;
+        }
+
+        // 模型列表
+        if ("GET".equals(method) && "/v1/models".equals(path)) {
+            handleListModels(os);
+            return;
+        }
+
+        // Chat Completions
+        if ("POST".equals(method) && "/v1/chat/completions".equals(path)) {
+            handleChatCompletions(headers, body, os);
+            return;
+        }
+
+        // 404
+        JSONObject err = new JSONObject();
+        try {
+            err.put("error", new JSONObject()
+                .put("message", "Not Found: " + path)
+                .put("type", "not_found")
+                .put("code", 404));
+        } catch (Exception ignored) {}
+        sendResponse(os, 404, "Not Found", "application/json", err.toString());
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  /v1/models
+    // ════════════════════════════════════════════════════════════
+    private static void handleListModels(OutputStream os) throws IOException {
+        JSONObject resp = new JSONObject();
+        try {
+            resp.put("object", "list");
+            JSONArray data = new JSONArray();
+
+            String[] models = {
+                "glm-4", "glm-4-flash", "glm-4-plus", "glm-4-long",
+                "glm-4-air", "glm-4-airx", "glm-4v", "glm-4v-flash",
+                "glm-4-0520", "codegeex-4", "glm-4-alltools"
+            };
+
+            for (String m : models) {
+                JSONObject model = new JSONObject();
+                model.put("id", m);
+                model.put("object", "model");
+                model.put("created", System.currentTimeMillis() / 1000);
+                model.put("owned_by", "zhipu");
+                data.put(model);
+            }
+            resp.put("data", data);
+        } catch (Exception ignored) {}
+        sendResponse(os, 200, "OK", "application/json", resp.toString());
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  /v1/chat/completions
+    // ════════════════════════════════════════════════════════════
+    private static void handleChatCompletions(ConcurrentHashMap<String, String> headers,
+                                              byte[] body, OutputStream os) throws IOException {
+        // 检查后端就绪
+        if (backend == null || !backend.isReady()) {
+            String detail = (backend != null) ? backend.readinessDetail() : "后端未初始化";
+            sendError(os, 503, "backend_not_ready", "后端未就绪: " + detail);
+            return;
+        }
+
+        if (body == null || body.length == 0) {
+            sendError(os, 400, "invalid_request", "请求体为空");
+            return;
+        }
+
+        // 解析请求 JSON
+        JSONObject req;
+        try {
+            req = new JSONObject(new String(body, StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            sendError(os, 400, "invalid_json", "JSON 解析失败: " + e.getMessage());
+            return;
+        }
+
+        String model = req.optString("model", "glm-4");
+        JSONArray messages = req.optJSONArray("messages");
+        if (messages == null || messages.length() == 0) {
+            sendError(os, 400, "invalid_request", "messages 字段为空");
+            return;
+        }
+
+        boolean stream = req.optBoolean("stream", false);
+        double temperature = req.optDouble("temperature", 0.7);
+        int maxTokens = req.optInt("max_tokens", 0);
+        double topP = req.optDouble("top_p", 1.0);
+
+        String[] stop = null;
+        JSONArray stopArr = req.optJSONArray("stop");
+        if (stopArr != null && stopArr.length() > 0) {
+            stop = new String[stopArr.length()];
+            for (int i = 0; i < stopArr.length(); i++) {
+                stop[i] = stopArr.optString(i);
+            }
+        }
+
+        String requestId = "chatcmpl-" + System.currentTimeMillis()
+                + "-" + (int)(Math.random() * 100000);
+
+        CompletionRequest completionReq = new CompletionRequest(
+            requestId, model, messages, stream, temperature, maxTokens, topP, stop);
+
+        if (stream) {
+            handleStreamCompletion(completionReq, os);
+        } else {
+            handleNonStreamCompletion(completionReq, os);
+        }
+    }
+
+    // ── 非流式 ──────────────────────────────────────────────────
+    private static void handleNonStreamCompletion(CompletionRequest req, OutputStream os)
+            throws IOException {
+        try {
+            CompletionResult result = backend.complete(req, null);
+
+            JSONObject resp = new JSONObject();
+            resp.put("id", req.requestId);
+            resp.put("object", "chat.completion");
+            resp.put("created", System.currentTimeMillis() / 1000);
+            resp.put("model", req.model);
+
+            JSONArray choices = new JSONArray();
+            JSONObject choice = new JSONObject();
+            choice.put("index", 0);
+
+            JSONObject message = new JSONObject();
+            message.put("role", "assistant");
+            message.put("content", result.content != null ? result.content : "");
+            if (result.reasoning != null && !result.reasoning.isEmpty()) {
+                message.put("reasoning_content", result.reasoning);
+            }
+            choice.put("message", message);
+            choice.put("finish_reason", result.finishReason != null ? result.finishReason : "stop");
+            choices.put(choice);
+            resp.put("choices", choices);
+
+            JSONObject usage = new JSONObject();
+            usage.put("prompt_tokens", result.promptTokens);
+            usage.put("completion_tokens", result.completionTokens);
+            usage.put("total_tokens", result.promptTokens + result.completionTokens);
+            resp.put("usage", usage);
+
+            sendResponse(os, 200, "OK", "application/json", resp.toString());
+
+        } catch (GatewayException e) {
+            sendError(os, e.httpStatus, e.errorCode, e.getMessage());
+        } catch (Exception e) {
+            log("非流式完成异常: " + e.getMessage());
+            sendError(os, 500, "internal_error", "内部错误: " + e.getMessage());
+        }
+    }
+
+    // ── 流式 SSE ────────────────────────────────────────────────
+    private static void handleStreamCompletion(CompletionRequest req, OutputStream os)
+            throws IOException {
+        // 发送 SSE headers
+        StringBuilder header = new StringBuilder();
+        header.append("HTTP/1.1 200 OK\r\n");
+        header.append("Content-Type: text/event-stream; charset=utf-8\r\n");
+        header.append("Cache-Control: no-cache\r\n");
+        header.append("Connection: keep-alive\r\n");
+        header.append("Access-Control-Allow-Origin: *\r\n");
+        header.append("\r\n");
+        os.write(header.toString().getBytes(StandardCharsets.UTF_8));
+        os.flush();
+
+        final OutputStream sos = os;
+        DeltaSink sink = new DeltaSink() {
+            @Override
+            public boolean onText(String delta) throws Exception {
+                JSONObject chunk = new JSONObject();
+                chunk.put("id", req.requestId);
+                chunk.put("object", "chat.completion.chunk");
+                chunk.put("created", System.currentTimeMillis() / 1000);
+                chunk.put("model", req.model);
+
+                JSONArray choices = new JSONArray();
+                JSONObject choice = new JSONObject();
+                choice.put("index", 0);
+                JSONObject d = new JSONObject();
+                d.put("content", delta);
+                choice.put("delta", d);
+                choice.put("finish_reason", JSONObject.NULL);
+                choices.put(choice);
+                chunk.put("choices", choices);
+
+                return writeSseEvent(sos, chunk.toString());
+            }
+
+            @Override
+            public boolean onReasoning(String delta) throws Exception {
+                JSONObject chunk = new JSONObject();
+                chunk.put("id", req.requestId);
+                chunk.put("object", "chat.completion.chunk");
+                chunk.put("created", System.currentTimeMillis() / 1000);
+                chunk.put("model", req.model);
+
+                JSONArray choices = new JSONArray();
+                JSONObject choice = new JSONObject();
+                choice.put("index", 0);
+                JSONObject d = new JSONObject();
+                d.put("reasoning_content", delta);
+                choice.put("delta", d);
+                choice.put("finish_reason", JSONObject.NULL);
+                choices.put(choice);
+                chunk.put("choices", choices);
+
+                return writeSseEvent(sos, chunk.toString());
+            }
+
+            @Override
+            public boolean isCancelled() {
+                return !running.get();
+            }
+        };
+
+        try {
+            CompletionResult result = backend.complete(req, sink);
+
+            // 发送最终 chunk
+            JSONObject finalChunk = new JSONObject();
+            finalChunk.put("id", req.requestId);
+            finalChunk.put("object", "chat.completion.chunk");
+            finalChunk.put("created", System.currentTimeMillis() / 1000);
+            finalChunk.put("model", req.model);
+
+            JSONArray choices = new JSONArray();
+            JSONObject choice = new JSONObject();
+            choice.put("index", 0);
+            choice.put("delta", new JSONObject());
+            choice.put("finish_reason",
+                result != null && result.finishReason != null ? result.finishReason : "stop");
+            choices.put(choice);
+            finalChunk.put("choices", choices);
+
+            if (result != null && result.promptTokens > 0) {
+                JSONObject usage = new JSONObject();
+                usage.put("prompt_tokens", result.promptTokens);
+                usage.put("completion_tokens", result.completionTokens);
+                usage.put("total_tokens", result.promptTokens + result.completionTokens);
+                finalChunk.put("usage", usage);
+            }
+
+            writeSseEvent(os, finalChunk.toString());
+
+            // 发送 [DONE]
+            os.write("data: [DONE]\r\n\r\n".getBytes(StandardCharsets.UTF_8));
+            os.flush();
+
+        } catch (GatewayException e) {
+            sendSseError(os, e.errorCode, e.getMessage());
+        } catch (Exception e) {
+            log("流式完成异常: " + e.getMessage());
+            sendSseError(os, "internal_error", e.getMessage());
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  HTTP 工具方法
+    // ════════════════════════════════════════════════════════════
+    private static String readLine(InputStream is) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        int c;
+        while ((c = is.read()) != -1) {
+            if (c == '\r') {
+                int next = is.read();
+                if (next == '\n') break;
+                sb.append((char) c);
+                if (next != -1) sb.append((char) next);
+            } else if (c == '\n') {
+                break;
+            } else {
+                sb.append((char) c);
+            }
+            if (sb.length() > MAX_HEADER_BYTES) break;
+        }
+        return sb.toString();
+    }
+
+    private static void sendResponse(OutputStream os, int status, String reason,
+                                     String contentType, String body) throws IOException {
+        byte[] bodyBytes = body.getBytes(StandardCharsets.UTF_8);
+        StringBuilder sb = new StringBuilder();
+        sb.append("HTTP/1.1 ").append(status).append(" ").append(reason).append("\r\n");
+        sb.append("Content-Type: ").append(contentType).append("; charset=utf-8\r\n");
+        sb.append("Content-Length: ").append(bodyBytes.length).append("\r\n");
+        sb.append("Access-Control-Allow-Origin: *\r\n");
+        sb.append("Connection: close\r\n");
+        sb.append("\r\n");
+        os.write(sb.toString().getBytes(StandardCharsets.UTF_8));
+        os.write(bodyBytes);
+        os.flush();
+    }
+
+    private static void sendError(OutputStream os, int status, String code, String message)
+            throws IOException {
+        JSONObject err = new JSONObject();
+        try {
+            JSONObject error = new JSONObject();
+            error.put("message", message);
+            error.put("type", code);
+            error.put("code", status);
+            err.put("error", error);
+        } catch (Exception ignored) {}
+        sendResponse(os, status, "Error", "application/json", err.toString());
+    }
+
+    private static boolean writeSseEvent(OutputStream os, String data) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        sb.append("data: ").append(data).append("\r\n\r\n");
+        os.write(sb.toString().getBytes(StandardCharsets.UTF_8));
+        os.flush();
+        return true;
+    }
+
+    private static void sendSseError(OutputStream os, String code, String message)
+            throws IOException {
+        JSONObject err = new JSONObject();
+        try {
+            err.put("error", new JSONObject()
+                .put("message", message)
+                .put("type", code));
+        } catch (Exception ignored) {}
+        writeSseEvent(os, err.toString());
+        os.write("data: [DONE]\r\n\r\n".getBytes(StandardCharsets.UTF_8));
+        os.flush();
+    }
+
+    private static void log(String msg) {
+        try {
+            de.robv.android.xposed.XposedBridge.log("[" + TAG + "] " + msg);
+        } catch (Throwable ignored) {}
+    }
+}
