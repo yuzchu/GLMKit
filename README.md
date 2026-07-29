@@ -29,7 +29,7 @@
 
 ### 1. 安装模块
 
-将构建好的 `glmkit-v1.0.4.apk` 安装到设备上。
+将构建好的 `glmkit-v1.0.5.apk` 安装到设备上。
 
 ### 2. 激活模块
 
@@ -143,7 +143,7 @@ export ANDROID_HOME=/path/to/android-sdk
 ./scripts/build.sh
 ```
 
-输出：`build/glmkit-v1.0.4.apk`
+输出：`build/glmkit-v1.0.5.apk`
 
 ## 🏗️ 架构设计
 
@@ -189,6 +189,7 @@ export ANDROID_HOME=/path/to/android-sdk
 |------|------|------|
 | POST | `/v1/chat/completions` | 对话补全（支持 `stream` 参数） |
 | GET | `/v1/models` | 返回可用模型列表 |
+| GET | `/v1/diagnostic` | 诊断信息（模块版本、网关状态、后端捕获状态） |
 | GET | `/healthz` | 健康检查 |
 
 ### 请求格式（OpenAI 兼容）
@@ -279,11 +280,13 @@ export ANDROID_HOME=/path/to/android-sdk
 | 认证失败 | 重启智谱清言，确保已登录账号 |
 | 流式响应中断 | 启用保活服务，防止进程被冻结 |
 | 端口冲突 | 在设置界面修改端口号（v1.0.3+ 自动尝试备用端口） |
+| 排查问题 | `curl http://127.0.0.1:8765/v1/diagnostic` 查看模块状态和捕获详情 |
 
 ## 📦 更新日志
 
 | 版本 | 修复内容 |
 |------|----------|
+| v1.0.5 | 新增 `/v1/diagnostic` 诊断端点（模块版本、网关状态、后端捕获详情、智能提示） |
 | v1.0.4 | GLM API URL 提取逻辑修复（`/api/paas/v4` 路径不再被截断）；Content-Length 健壮性（413/400 错误码） |
 | v1.0.3 | Response body 泄漏修复；端口被占用时自动尝试备用端口（port+1~port+10） |
 | v1.0.2 | 端口配置生效修复；CORS preflight (OPTIONS) 支持；版本号硬编码修复 |
