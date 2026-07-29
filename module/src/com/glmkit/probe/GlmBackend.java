@@ -174,11 +174,14 @@ public class GlmBackend implements LocalApiGateway.Backend {
             payload.put("stop", stopArr);
         }
 
-        // GLM 特有: 启用思考链 (通过 model 名判断)
-        if (req.model != null && (req.model.contains("thinking")
-                || req.model.contains("reasoner")
-                || req.model.startsWith("o1"))) {
-            payload.put("thinking", new JSONObject().put("type", "enabled"));
+        // GLM 特有: 启用思考链 (通过 model 名判断，大小写不敏感)
+        if (req.model != null) {
+            String modelLower = req.model.toLowerCase();
+            if (modelLower.contains("thinking")
+                    || modelLower.contains("reasoner")
+                    || modelLower.startsWith("o1")) {
+                payload.put("thinking", new JSONObject().put("type", "enabled"));
+            }
         }
 
         // 请求 ID
@@ -237,12 +240,14 @@ public class GlmBackend implements LocalApiGateway.Backend {
         if (openaiModel == null || openaiModel.isEmpty()) {
             return DEFAULT_GLM_MODEL;
         }
-        // 已是 GLM 模型名，直接透传
-        if (openaiModel.startsWith("glm-") || openaiModel.startsWith("codegeex-")) {
-            return openaiModel;
+        // 大小写不敏感匹配
+        String model = openaiModel.toLowerCase();
+        // 已是 GLM 模型名，直接透传 (小写化，GLM API 期望小写)
+        if (model.startsWith("glm-") || model.startsWith("codegeex-")) {
+            return model;
         }
         // OpenAI 模型名 → GLM 模型名映射
-        switch (openaiModel) {
+        switch (model) {
             // OpenAI o1 系列 (推理模型 → GLM + thinking)
             case "o1-preview":
             case "o1":
@@ -322,19 +327,19 @@ public class GlmBackend implements LocalApiGateway.Backend {
                 return "glm-4-flash";
             default:
                 // 未知 gpt-* 模型 → glm-4
-                if (openaiModel.startsWith("gpt-")) return "glm-4";
-                if (openaiModel.startsWith("claude-")) return "glm-4-plus";
-                if (openaiModel.startsWith("gemini-")) return "glm-4";
-                if (openaiModel.startsWith("qwen-")) return "glm-4-flash";
-                if (openaiModel.startsWith("yi-")) return "glm-4-flash";
-                if (openaiModel.startsWith("moonshot-")) return "glm-4-flash";
-                if (openaiModel.startsWith("llama")) return "glm-4-flash";
-                if (openaiModel.startsWith("mistral") || openaiModel.startsWith("mixtral")) return "glm-4-flash";
-                if (openaiModel.startsWith("deepseek-")) return "glm-4-flash";
-                if (openaiModel.startsWith("o1")) return "glm-4-plus";
-                if (openaiModel.startsWith("o3")) return "glm-4-plus";
-                // 其他：透传（可能是 GLM 新模型）
-                return openaiModel;
+                if (model.startsWith("gpt-")) return "glm-4";
+                if (model.startsWith("claude-")) return "glm-4-plus";
+                if (model.startsWith("gemini-")) return "glm-4";
+                if (model.startsWith("qwen-")) return "glm-4-flash";
+                if (model.startsWith("yi-")) return "glm-4-flash";
+                if (model.startsWith("moonshot-")) return "glm-4-flash";
+                if (model.startsWith("llama")) return "glm-4-flash";
+                if (model.startsWith("mistral") || model.startsWith("mixtral")) return "glm-4-flash";
+                if (model.startsWith("deepseek-")) return "glm-4-flash";
+                if (model.startsWith("o1")) return "glm-4-plus";
+                if (model.startsWith("o3")) return "glm-4-plus";
+                // 其他：透传小写化（可能是 GLM 新模型）
+                return model;
         }
     }
 
