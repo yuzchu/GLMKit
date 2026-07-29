@@ -54,6 +54,28 @@ public class GlmBackend implements LocalApiGateway.Backend {
     }
 
     @Override
+    public String lastError() {
+        return lastError;
+    }
+
+    @Override
+    public String diagnosticInfo() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("okHttpClient: ").append(capture.getOkHttpClient() != null ? "captured" : "waiting").append("\n");
+        sb.append("baseUrl: ").append(capture.getBaseUrl() != null ? capture.getBaseUrl() : "not captured").append("\n");
+        sb.append("apiUrl: ").append(capture.getApiUrl() != null ? capture.getApiUrl() : "not captured").append("\n");
+        sb.append("resolvedBaseUrl: ").append(capture.getBestBaseUrl()).append("\n");
+        sb.append("authToken: ").append(capture.getAuthToken() != null ? "captured (len=" + capture.getAuthToken().length() + ")" : "not captured").append("\n");
+        sb.append("apiKey: ").append(capture.getApiKey() != null ? "captured" : "not captured").append("\n");
+        sb.append("cookie: ").append(capture.getCookie() != null ? "captured" : "not captured").append("\n");
+        sb.append("deviceId: ").append(capture.getDeviceId() != null ? "captured" : "not captured").append("\n");
+        if (lastError != null) {
+            sb.append("lastError: ").append(lastError).append("\n");
+        }
+        return sb.toString();
+    }
+
+    @Override
     public LocalApiGateway.CompletionResult complete(
             LocalApiGateway.CompletionRequest req,
             LocalApiGateway.DeltaSink sink) throws Exception {

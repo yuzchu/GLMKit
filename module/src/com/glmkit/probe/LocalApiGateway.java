@@ -67,6 +67,12 @@ public class LocalApiGateway {
          * @return         完成结果
          */
         CompletionResult complete(CompletionRequest request, DeltaSink sink) throws Exception;
+
+        /** 返回最近错误信息（用于诊断端点），无错误返回 null */
+        default String lastError() { return null; }
+
+        /** 返回详细诊断信息（用于诊断端点） */
+        default String diagnosticInfo() { return readinessDetail(); }
     }
 
     public interface DeltaSink {
@@ -374,6 +380,12 @@ public class LocalApiGateway {
             return;
         }
 
+        // 诊断端点
+        if ("GET".equals(method) && "/v1/diagnostic".equals(path)) {
+            handleDiagnostic(os);
+            return;
+        }
+
         // Chat Completions
         if ("POST".equals(method) && "/v1/chat/completions".equals(path)) {
             handleChatCompletions(headers, body, os);
@@ -415,6 +427,45 @@ public class LocalApiGateway {
                 data.put(model);
             }
             resp.put("data", data);
+        } catch (Exception ignored) {}
+        sendResponse(os, 200, "OK", "application/json", resp.toString());
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  /v1/diagnostic
+    // ════════════════════════════════════════════════════════════
+    private static void handleDiagnostic(OutputStream os) throws IOException {
+        JSONObject resp = new JSONObject();
+        try {
+            resp.put("module", "GLMKit");
+            resp.put("version", "1.0.5");
+            resp.put("gateway_running", isRunning());
+            resp.put("listen_port", listenPort);
+            resp.put("active_connections", activeConnections.get());
+            resp.put("endpoint", endpoint());
+
+            if (backend != null) {
+                resp.put("backend_ready", backend.isReady());
+                resp.put("backend_detail", backend.readinessDetail());
+                String err = backend.lastError();
+                if (err != null) resp.put("last_error", err);
+                resp.put("diagnostic_info", backend.diagnosticInfo());
+            } else {
+                resp.put("backend_ready", false);
+                resp.put("backend_detail", "后端未初始化");
+            }
+
+            // 提示
+            JSONArray tips = new JSONArray();
+            if (backend == null || !backend.isReady()) {
+                tips.put("请确保智谱清言已打开并登录，模块需要捕获认证信息");
+                tips.put("尝试在智谱清言中发起一次对话，触发 API 请求捕获");
+            }
+            if (isRunning() && (backend == null || !backend.isReady())) {
+                tips.put("网关已启动但后端未就绪，等待 OkHttp 客户端捕获中...");
+            }
+            if (tips.length() > 0) resp.put("tips", tips);
+
         } catch (Exception ignored) {}
         sendResponse(os, 200, "OK", "application/json", resp.toString());
     }
