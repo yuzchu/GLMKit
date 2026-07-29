@@ -45,10 +45,8 @@ public class GlmBackend implements LocalApiGateway.Backend {
     public String readinessDetail() {
         StringBuilder sb = new StringBuilder();
         sb.append("client=").append(capture.getOkHttpClient() != null ? "yes" : "no");
-        sb.append(", baseUrl=").append(capture.getBaseUrl() != null ? "yes" : "no");
-        sb.append(", token=").append(capture.getAuthToken() != null ? "yes" : "no");
-        sb.append(", apiKey=").append(capture.getApiKey() != null ? "yes" : "no");
-        sb.append(", cookie=").append(capture.getCookie() != null ? "yes" : "no");
+        sb.append(", baseUrl=").append(capture.getBestBaseUrl() != null ? "yes" : "no");
+        sb.append(", auth=").append(capture.getBestAuth() != null ? "yes" : "no");
         if (lastError != null) {
             sb.append(", lastError=").append(lastError);
         }

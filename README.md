@@ -29,7 +29,7 @@
 
 ### 1. 安装模块
 
-将构建好的 `glmkit-v1.0.28.apk` 安装到设备上。
+将构建好的 `glmkit-v1.0.29.apk` 安装到设备上。
 
 ### 2. 激活模块
 
@@ -146,7 +146,7 @@ export ANDROID_HOME=/path/to/android-sdk
 ./scripts/build.sh
 ```
 
-输出：`build/glmkit-v1.0.28.apk`
+输出：`build/glmkit-v1.0.29.apk`
 
 ## 🏗️ 架构设计
 
@@ -289,6 +289,7 @@ export ANDROID_HOME=/path/to/android-sdk
 
 | 版本 | 修复内容 |
 |------|----------|
+| v1.0.29 | `readinessDetail()` 诊断信息改用解析后的 best 值，与 `isReady()` 判定一致 |
 | v1.0.28 | KeepAliveActivity 状态区显示实际网关端口；SettingsActivity 使用说明端口号动态更新；README 版本引用和 Hook 策略描述修正 |
 | v1.0.27 | 网关启动失败时不发送启动广播；KeepAliveActivity 端口标签修正 |
 | v1.0.26 | strings.xml 版本号动态化；README 版本引用和项目结构路径修正 |
