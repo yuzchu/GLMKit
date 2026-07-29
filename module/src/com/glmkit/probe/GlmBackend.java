@@ -481,10 +481,11 @@ public class GlmBackend implements LocalApiGateway.Backend {
         JSONObject choice = choices.getJSONObject(0);
         JSONObject message = choice.optJSONObject("message");
         String content = message != null ? message.optString("content", "") : "";
+        if ("null".equals(content)) content = "";  // optString returns "null" for JSON null
         String reasoning = message != null ? message.optString("reasoning_content", null) : null;
-        if (reasoning != null && reasoning.isEmpty()) reasoning = null; // optString returns "" for JSON null
+        if (reasoning != null && (reasoning.isEmpty() || "null".equals(reasoning))) reasoning = null;
         String finishReason = choice.optString("finish_reason", "stop");
-        if (finishReason.isEmpty()) finishReason = "stop"; // optString returns "" for JSON null
+        if (finishReason.isEmpty() || "null".equals(finishReason)) finishReason = "stop";
         JSONArray toolCalls = message != null ? message.optJSONArray("tool_calls") : null;
 
         // usage
