@@ -87,7 +87,7 @@ public final class LocalApiKeepAliveActivity extends Activity {
 
         desc.setText("通过 Xposed 注入智谱清言，在本地启动 OpenAI 兼容 API 网关。\n"
                 + "开启保活后，目标应用进程将保持活跃，确保 API 持续可用。\n\n"
-                + "当前监听端口：" + port + "\n"
+                + "配置端口：" + port + "\n"
                 + "API 端点：http://127.0.0.1:" + port + "/v1/chat/completions\n"
                 + "模型列表：http://127.0.0.1:" + port + "/v1/models");
         desc.setTextSize(14f);

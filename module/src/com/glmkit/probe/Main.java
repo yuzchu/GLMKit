@@ -350,6 +350,12 @@ public class Main implements IXposedHookLoadPackage {
 
                 GlmBackend backend = new GlmBackend(getCapture());
                 int actualPort = LocalApiGateway.start(ctx, backend);
+
+                if (!LocalApiGateway.isRunning()) {
+                    log("✗ 网关启动失败，所有端口均被占用，不发送启动广播");
+                    return;
+                }
+
                 log("本地 API 网关已启动，实际端口: " + actualPort);
 
                 // 通知模块自身进程：网关已启动
