@@ -3,6 +3,7 @@ package com.glmkit.probe;
 import android.content.Context;
 
 import java.lang.reflect.Method;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -30,7 +31,7 @@ public class Main implements IXposedHookLoadPackage {
     // 捕获的 GLM 网络信息
     private volatile GlmCapture capture;
     private volatile Context appContext;
-    private volatile boolean realCallHooked = false;
+    private final AtomicBoolean realCallHooked = new AtomicBoolean(false);
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
@@ -136,7 +137,7 @@ public class Main implements IXposedHookLoadPackage {
     //  捕获拦截器 — 通过 Hook Call.execute/enqueue 捕获请求头
     // ════════════════════════════════════════════════════════════
     private void installCaptureInterceptor(Object client, ClassLoader cl) {
-        if (realCallHooked) {
+        if (!realCallHooked.compareAndSet(false, true)) {
             return; // 已安装过 RealCall hook，避免重复捕获
         }
         try {
@@ -163,9 +164,9 @@ public class Main implements IXposedHookLoadPackage {
                     }
                 });
 
-            realCallHooked = true;
             log("安装请求捕获拦截器成功");
         } catch (Throwable t) {
+            realCallHooked.set(false); // 重置标志，允许后续重试
             // RealCall 可能不存在或路径不同，尝试备用方案
             log("安装 RealCall 拦截器失败，尝试 Interceptor 方案: " + t.getMessage());
             installInterceptorChain(client, cl);

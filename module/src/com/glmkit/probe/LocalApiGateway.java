@@ -449,7 +449,7 @@ public class LocalApiGateway {
         JSONObject resp = new JSONObject();
         try {
             resp.put("module", "GLMKit");
-            resp.put("version", "1.0.7");
+            resp.put("version", "1.0.8");
             resp.put("gateway_running", isRunning());
             resp.put("listen_port", listenPort);
             resp.put("active_connections", activeConnections.get());
@@ -520,11 +520,17 @@ public class LocalApiGateway {
         double topP = req.optDouble("top_p", 1.0);
 
         String[] stop = null;
+        // OpenAI allows stop as a string or array of strings
         JSONArray stopArr = req.optJSONArray("stop");
         if (stopArr != null && stopArr.length() > 0) {
             stop = new String[stopArr.length()];
             for (int i = 0; i < stopArr.length(); i++) {
                 stop[i] = stopArr.optString(i);
+            }
+        } else {
+            String stopStr = req.optString("stop", null);
+            if (stopStr != null && !stopStr.isEmpty()) {
+                stop = new String[]{stopStr};
             }
         }
 

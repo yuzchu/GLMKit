@@ -104,7 +104,15 @@ public class GlmBackend implements LocalApiGateway.Backend {
         }
 
         // 检查响应码
-        int code = getResponseCode(response);
+        int code;
+        try {
+            code = getResponseCode(response);
+        } catch (Exception e) {
+            closeResponseBodyQuietly(response);
+            lastError = "getResponseCode failed: " + e.getMessage();
+            throw new LocalApiGateway.GatewayException(502, "response_error",
+                "读取 GLM 响应码失败: " + e.getMessage());
+        }
         log("← GLM 响应码: " + code);
 
         if (code != 200) {
@@ -345,7 +353,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
         Object requestBody = createBodyMethod.invoke(null, mediaType, body);
 
         // 构建 Request
-        Object requestBuilder = builderClass.newInstance();
+        Object requestBuilder = builderClass.getDeclaredConstructor().newInstance();
         Method urlMethod = builderClass.getMethod("url", String.class);
         urlMethod.invoke(requestBuilder, url);
 
