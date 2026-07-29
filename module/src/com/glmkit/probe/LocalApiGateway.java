@@ -27,6 +27,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   GET  /healthz              — 健康检查
  *   GET  /v1/models            — 模型列表
  *   POST /v1/chat/completions  — Chat Completions（支持 SSE 流式）
+ *   POST /shutdown             — 停止网关
+ *   POST /restart              — 重启网关
  *
  * 监听 127.0.0.1:8765（默认），仅本地访问。
  */
@@ -51,6 +53,7 @@ public class LocalApiGateway {
                 return t;
             });
     private static volatile int listenPort = DEFAULT_PORT;
+    private static volatile String gatewayApiKey = null;  // 自定义 API Key (null 表示不验证)
 
     // ════════════════════════════════════════════════════════════
     //  Backend 接口
@@ -161,6 +164,14 @@ public class LocalApiGateway {
 
     public static int getListenPort() {
         return listenPort;
+    }
+
+    public static void setApiKey(String key) {
+        gatewayApiKey = (key != null && !key.isEmpty()) ? key : null;
+    }
+
+    public static String getApiKey() {
+        return gatewayApiKey;
     }
 
     public static int start(Context ctx, Backend b) {
@@ -406,6 +417,61 @@ public class LocalApiGateway {
             return;
         }
 
+        // 网关控制端点 — /shutdown 和 /restart
+        if ("POST".equals(method) && "/shutdown".equals(path)) {
+            log("收到 /shutdown 请求，正在停止网关...");
+            stop();
+            JSONObject resp = new JSONObject();
+            try {
+                resp.put("status", "shutdown");
+                resp.put("message", "网关已停止");
+            } catch (Exception ignored) {}
+            sendResponse(os, 200, "OK", "application/json", resp.toString());
+            return;
+        }
+
+        if ("POST".equals(method) && "/restart".equals(path)) {
+            log("收到 /restart 请求，正在重启网关...");
+            stop();
+            try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+            int restartPort = start(context, backend);
+            JSONObject resp = new JSONObject();
+            try {
+                resp.put("status", "restarted");
+                resp.put("message", restartPort > 0 ? "网关已重启" : "重启失败");
+                resp.put("port", restartPort);
+            } catch (Exception ignored) {}
+            sendResponse(os, 200, "OK", "application/json", resp.toString());
+            return;
+        }
+
+        // API Key 验证 — 保护 /v1/ API 端点（/v1/diagnostic 除外）
+        if (gatewayApiKey != null && path.startsWith("/v1/")
+                && !"/v1/diagnostic".equals(path)) {
+            String authHeader = headers.get("authorization");
+            String providedKey = null;
+            if (authHeader != null) {
+                authHeader = authHeader.trim();
+                if (authHeader.toLowerCase().startsWith("bearer ")) {
+                    providedKey = authHeader.substring(7).trim();
+                } else {
+                    providedKey = authHeader;
+                }
+            }
+            if (providedKey == null || !providedKey.equals(gatewayApiKey)) {
+                log("✗ API Key 验证失败");
+                JSONObject authErr = new JSONObject();
+                try {
+                    authErr.put("error", new JSONObject()
+                        .put("message", "Invalid API key. Set Authorization: Bearer <your-key>")
+                        .put("type", "invalid_api_key")
+                        .put("code", 401));
+                } catch (Exception ignored) {}
+                sendResponse(os, 401, "Unauthorized", "application/json", authErr.toString());
+                return;
+            }
+        }
+
         // 模型列表
         if ("GET".equals(method) && "/v1/models".equals(path)) {
             handleListModels(os);
@@ -475,6 +541,7 @@ public class LocalApiGateway {
             resp.put("listen_port", listenPort);
             resp.put("active_connections", activeConnections.get());
             resp.put("endpoint", endpoint());
+            resp.put("api_key_required", gatewayApiKey != null);
 
             if (backend != null) {
                 resp.put("backend_ready", backend.isReady());

@@ -345,7 +345,11 @@ public class Main implements IXposedHookLoadPackage {
                     xPrefs.makeReadable();
                     port = xPrefs.getInt("port", 8765);
                     LocalApiGateway.setListenPort(port);
+                    // 读取自定义 API Key（null 或空表示不验证）
+                    String apiKey = xPrefs.getString("api_key", null);
+                    LocalApiGateway.setApiKey(apiKey);
                     log("配置监听端口: " + port + " (从模块偏好读取)");
+                    log("API Key 验证: " + (apiKey != null && !apiKey.isEmpty() ? "已启用" : "未启用"));
                 } catch (Throwable ignored) {}
 
                 GlmBackend backend = new GlmBackend(getCapture());

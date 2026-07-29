@@ -1,6 +1,8 @@
 package com.glmkit.probe;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -41,6 +43,7 @@ public final class SettingsActivity extends Activity {
     private static final String PREFS = "glmkit_settings";
     private static final String KEY_PORT = "port";
     private static final String KEY_KEEPALIVE = "keepalive";
+    private static final String KEY_API_KEY = "api_key";
     private static final int DEFAULT_PORT = 8765;
     private static final String TARGET_PACKAGE = "com.zhipuai.qingyan";
 
@@ -149,10 +152,100 @@ public final class SettingsActivity extends Activity {
         apiUrl.setText("http://127.0.0.1:" + getSavedPort() + "/v1/chat/completions");
         apiUrl.setTextSize(13f);
         apiUrl.setTextColor(0xFF0066CC);
-        apiUrl.setPadding(16, 0, 0, 16);
+        apiUrl.setPadding(16, 0, 0, 0);
         apiUrl.setId(View.generateViewId());
         apiUrl.setTag("api_url");
         root.addView(apiUrl);
+
+        Button copyAddrBtn = new Button(this);
+        copyAddrBtn.setText("📋 复制 API 地址");
+        copyAddrBtn.setOnClickListener(v -> {
+            String addr = "http://127.0.0.1:" + getSavedPort() + "/v1";
+            copyToClipboard("API 地址", addr);
+        });
+        LinearLayout.LayoutParams copyAddrParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        copyAddrParams.leftMargin = 16;
+        // Use a horizontal row for the copy button
+        LinearLayout addrRow = new LinearLayout(this);
+        addrRow.setOrientation(LinearLayout.HORIZONTAL);
+        addrRow.setGravity(Gravity.CENTER_VERTICAL);
+        addrRow.setPadding(16, 4, 0, 16);
+        addrRow.addView(copyAddrBtn);
+        root.addView(addrRow);
+
+        // ── 自定义 API Key ──
+        root.addView(sectionLabel("API Key（可选）"));
+        LinearLayout keyRow = new LinearLayout(this);
+        keyRow.setOrientation(LinearLayout.HORIZONTAL);
+        keyRow.setGravity(Gravity.CENTER_VERTICAL);
+        keyRow.setPadding(16, 8, 0, 8);
+
+        EditText apiKeyInput = new EditText(this);
+        apiKeyInput.setHint("设置自定义 Key（留空则不验证）");
+        String savedKey = getSavedApiKey();
+        if (!TextUtils.isEmpty(savedKey)) {
+            apiKeyInput.setText(savedKey);
+        }
+        LinearLayout.LayoutParams keyInputParams = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        apiKeyInput.setLayoutParams(keyInputParams);
+        keyRow.addView(apiKeyInput);
+
+        Button saveKeyBtn = new Button(this);
+        saveKeyBtn.setText("保存");
+        saveKeyBtn.setOnClickListener(v -> {
+            String key = apiKeyInput.getText().toString().trim();
+            saveApiKey(key);
+        });
+        LinearLayout.LayoutParams saveKeyParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        saveKeyParams.leftMargin = 16;
+        keyRow.addView(saveKeyBtn, saveKeyParams);
+        root.addView(keyRow);
+
+        // 复制 Key 按钮 + 说明
+        LinearLayout keyActionRow = new LinearLayout(this);
+        keyActionRow.setOrientation(LinearLayout.HORIZONTAL);
+        keyActionRow.setGravity(Gravity.CENTER_VERTICAL);
+        keyActionRow.setPadding(16, 0, 0, 8);
+
+        Button copyKeyBtn = new Button(this);
+        copyKeyBtn.setText("📋 复制 Key");
+        copyKeyBtn.setOnClickListener(v -> {
+            String key = getSavedApiKey();
+            if (TextUtils.isEmpty(key)) {
+                Toast.makeText(this, "请先设置并保存 API Key", Toast.LENGTH_SHORT).show();
+            } else {
+                copyToClipboard("API Key", key);
+            }
+        });
+        keyActionRow.addView(copyKeyBtn);
+
+        Button clearKeyBtn = new Button(this);
+        clearKeyBtn.setText("清除");
+        clearKeyBtn.setOnClickListener(v -> {
+            apiKeyInput.setText("");
+            saveApiKey("");
+            Toast.makeText(this, "API Key 已清除，网关不再验证", Toast.LENGTH_SHORT).show();
+        });
+        LinearLayout.LayoutParams clearKeyParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        clearKeyParams.leftMargin = 16;
+        keyActionRow.addView(clearKeyBtn, clearKeyParams);
+        root.addView(keyActionRow);
+
+        TextView keyDesc = new TextView(this);
+        keyDesc.setText("设置后，请求需携带 Authorization: Bearer <key>。\n"
+                + "留空则不验证（任何本地应用均可访问）。\n"
+                + "修改后点击「重启网关」生效。");
+        keyDesc.setTextSize(12f);
+        keyDesc.setTextColor(0xFF666666);
+        keyDesc.setPadding(16, 0, 0, 16);
+        root.addView(keyDesc);
 
         // ── 保活开关 ──
         root.addView(sectionLabel("保活服务"));
@@ -214,6 +307,36 @@ public final class SettingsActivity extends Activity {
         buttonRow.addView(openKeepAliveBtn, kaParams);
         root.addView(buttonRow);
 
+        // ── 网关控制 ──
+        root.addView(sectionLabel("网关控制"));
+        LinearLayout gwCtrlRow = new LinearLayout(this);
+        gwCtrlRow.setOrientation(LinearLayout.HORIZONTAL);
+        gwCtrlRow.setGravity(Gravity.CENTER);
+        gwCtrlRow.setPadding(0, 8, 0, 8);
+
+        Button stopGwBtn = new Button(this);
+        stopGwBtn.setText("⏹ 停止网关");
+        stopGwBtn.setOnClickListener(v -> stopGateway());
+        gwCtrlRow.addView(stopGwBtn);
+
+        Button restartGwBtn = new Button(this);
+        restartGwBtn.setText("🔄 重启网关");
+        restartGwBtn.setOnClickListener(v -> restartGateway());
+        LinearLayout.LayoutParams rgParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        rgParams.leftMargin = 16;
+        gwCtrlRow.addView(restartGwBtn, rgParams);
+        root.addView(gwCtrlRow);
+
+        TextView gwCtrlDesc = new TextView(this);
+        gwCtrlDesc.setText("停止：立即关闭本地 API 网关\n"
+                + "重启：重新加载配置（端口、API Key）并启动网关");
+        gwCtrlDesc.setTextSize(12f);
+        gwCtrlDesc.setTextColor(0xFF666666);
+        gwCtrlDesc.setPadding(16, 0, 0, 16);
+        root.addView(gwCtrlDesc);
+
         // ── 诊断测试 ──
         root.addView(sectionLabel("诊断测试"));
         LinearLayout diagRow = new LinearLayout(this);
@@ -253,10 +376,15 @@ public final class SettingsActivity extends Activity {
               + "4. 打开智谱清言并登录，模块将自动捕获认证信息\n"
               + "5. 使用以下地址作为 OpenAI 兼容 API 端点：\n"
               + "   http://127.0.0.1:" + getSavedPort() + "/v1\n\n"
+              + "API Key（可选）：\n"
+              + "  设置后请求需携带 Authorization: Bearer <key>\n"
+              + "  留空则不验证，修改后需「重启网关」生效\n\n"
               + "支持的 API 路由：\n"
               + "  POST /v1/chat/completions  — 对话补全（支持流式）\n"
               + "  GET  /v1/models            — 模型列表\n"
-              + "  GET  /healthz              — 健康检查\n\n"
+              + "  GET  /healthz              — 健康检查\n"
+              + "  POST /shutdown             — 停止网关\n"
+              + "  POST /restart              — 重启网关\n\n"
               + "兼容 OpenAI API 格式，可直接用于 ChatGPT 客户端、\n"
               + "LangChain、OpenAI SDK 等工具。");
         helpText.setTextSize(13f);
@@ -332,10 +460,15 @@ public final class SettingsActivity extends Activity {
                   + "4. 打开智谱清言并登录，模块将自动捕获认证信息\n"
                   + "5. 使用以下地址作为 OpenAI 兼容 API 端点：\n"
                   + "   http://127.0.0.1:" + getSavedPort() + "/v1\n\n"
+                  + "API Key（可选）：\n"
+                  + "  设置后请求需携带 Authorization: Bearer <key>\n"
+                  + "  留空则不验证，修改后需「重启网关」生效\n\n"
                   + "支持的 API 路由：\n"
                   + "  POST /v1/chat/completions  — 对话补全（支持流式）\n"
                   + "  GET  /v1/models            — 模型列表\n"
-                  + "  GET  /healthz              — 健康检查\n\n"
+                  + "  GET  /healthz              — 健康检查\n"
+                  + "  POST /shutdown             — 停止网关\n"
+                  + "  POST /restart              — 重启网关\n\n"
                   + "兼容 OpenAI API 格式，可直接用于 ChatGPT 客户端、\n"
                   + "LangChain、OpenAI SDK 等工具。");
         }
@@ -366,6 +499,66 @@ public final class SettingsActivity extends Activity {
 
     private void saveKeepAlive(boolean enabled) {
         getPrefs().edit().putBoolean(KEY_KEEPALIVE, enabled).apply();
+    }
+
+    private void saveApiKey(String key) {
+        getPrefs().edit().putString(KEY_API_KEY, key).apply();
+        Toast.makeText(this, TextUtils.isEmpty(key)
+                ? "API Key 已清除" : "API Key 已保存\n点击「重启网关」生效",
+                Toast.LENGTH_LONG).show();
+    }
+
+    private String getSavedApiKey() {
+        return getPrefs().getString(KEY_API_KEY, "");
+    }
+
+    private void copyToClipboard(String label, String text) {
+        try {
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(ClipData.newPlainText(label, text));
+            Toast.makeText(this, "已复制：" + label + "\n" + text,
+                    Toast.LENGTH_LONG).show();
+        } catch (Throwable t) {
+            Toast.makeText(this, "复制失败", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /**
+     * 停止网关 — 发送 POST /shutdown 到本地网关
+     */
+    private void stopGateway() {
+        final int port = getEffectiveGatewayPort();
+        Toast.makeText(this, "正在停止网关...", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            String result = httpPost("http://127.0.0.1:" + port + "/shutdown", 3000);
+            runOnUiThread(() -> {
+                if (result != null) {
+                    Toast.makeText(this, "✅ 网关已停止", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(this, "⚠️ 网关可能未运行", Toast.LENGTH_SHORT).show();
+                }
+                refreshStatus();
+            });
+        }, "glmkit-shutdown").start();
+    }
+
+    /**
+     * 重启网关 — 发送 POST /restart 到本地网关
+     */
+    private void restartGateway() {
+        final int port = getEffectiveGatewayPort();
+        Toast.makeText(this, "正在重启网关...", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            String result = httpPost("http://127.0.0.1:" + port + "/restart", 5000);
+            runOnUiThread(() -> {
+                if (result != null) {
+                    Toast.makeText(this, "✅ 网关已重启\n" + result, Toast.LENGTH_LONG).show();
+                } else {
+                    Toast.makeText(this, "⚠️ 重启失败，请尝试打开智谱清言", Toast.LENGTH_SHORT).show();
+                }
+                refreshStatus();
+            });
+        }, "glmkit-restart").start();
     }
 
     private void openTargetApp() {
@@ -495,6 +688,36 @@ public final class SettingsActivity extends Activity {
         }
     }
 
+    /**
+     * 简单 HTTP POST 请求（空 body），返回响应体字符串或 null（失败时）
+     */
+    private static String httpPost(String urlStr, int timeoutMs) {
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(urlStr);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(timeoutMs);
+            conn.setReadTimeout(timeoutMs);
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.getOutputStream().close();
+            int code = conn.getResponseCode();
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), "UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (sb.length() > 0) sb.append('\n');
+                sb.append(line);
+            }
+            reader.close();
+            return sb.toString();
+        } catch (Throwable ignored) {
+            return null;
+        } finally {
+            if (conn != null) try { conn.disconnect(); } catch (Throwable ignored) {}
+        }
+    }
     // ════════════════════════════════════════════════════════════
     //  状态检测
     // ════════════════════════════════════════════════════════════
