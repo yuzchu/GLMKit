@@ -109,7 +109,7 @@ public class GlmCapture {
             if (idx > 0) return apiUrl.substring(0, idx);
             // 2. 查找 GLM 标准路径 /api/paas/v4
             idx = apiUrl.indexOf("/api/paas/v4");
-            if (idx > 0) return apiUrl.substring(0, idx + 14);
+            if (idx > 0) return apiUrl.substring(0, idx + "/api/paas/v4".length());
             // 3. 查找通用 /v1 或 /v4 版本路径
             idx = apiUrl.indexOf("/v4/");
             if (idx > 0) return apiUrl.substring(0, idx + 3);
