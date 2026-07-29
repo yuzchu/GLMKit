@@ -449,7 +449,7 @@ public class LocalApiGateway {
         JSONObject resp = new JSONObject();
         try {
             resp.put("module", "GLMKit");
-            resp.put("version", "1.0.6");
+            resp.put("version", "1.0.7");
             resp.put("gateway_running", isRunning());
             resp.put("listen_port", listenPort);
             resp.put("active_connections", activeConnections.get());
@@ -600,6 +600,28 @@ public class LocalApiGateway {
         header.append("\r\n");
         os.write(header.toString().getBytes(StandardCharsets.UTF_8));
         os.flush();
+
+        // 发送首 chunk: role=assistant (OpenAI 兼容)
+        try {
+            JSONObject firstChunk = new JSONObject();
+            firstChunk.put("id", req.requestId);
+            firstChunk.put("object", "chat.completion.chunk");
+            firstChunk.put("created", System.currentTimeMillis() / 1000);
+            firstChunk.put("model", req.model);
+            JSONArray firstChoices = new JSONArray();
+            JSONObject firstChoice = new JSONObject();
+            firstChoice.put("index", 0);
+            JSONObject firstDelta = new JSONObject();
+            firstDelta.put("role", "assistant");
+            firstDelta.put("content", "");
+            firstChoice.put("delta", firstDelta);
+            firstChoice.put("finish_reason", JSONObject.NULL);
+            firstChoices.put(firstChoice);
+            firstChunk.put("choices", firstChoices);
+            writeSseEvent(os, firstChunk.toString());
+        } catch (Exception e) {
+            log("发送首 chunk 异常: " + e.getMessage());
+        }
 
         final OutputStream sos = os;
         DeltaSink sink = new DeltaSink() {

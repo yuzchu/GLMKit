@@ -177,10 +177,10 @@ public class GlmBackend implements LocalApiGateway.Backend {
             // tools / tool_choice (函数调用)
             JSONArray tools = req.rawRequest.optJSONArray("tools");
             if (tools != null) payload.put("tools", tools);
-            String toolChoice = req.rawRequest.optString("tool_choice", null);
-            if (toolChoice != null) payload.put("tool_choice", toolChoice);
-            else if (req.rawRequest.has("tool_choice")) {
-                payload.put("tool_choice", req.rawRequest.get("tool_choice"));
+            // tool_choice 可能是 String("auto"/"none") 或 JSONObject
+            if (req.rawRequest.has("tool_choice")) {
+                Object tc = req.rawRequest.get("tool_choice");
+                payload.put("tool_choice", tc);
             }
             // response_format (JSON 模式)
             JSONObject respFormat = req.rawRequest.optJSONObject("response_format");
@@ -190,6 +190,13 @@ public class GlmBackend implements LocalApiGateway.Backend {
             // user (用户标识)
             String user = req.rawRequest.optString("user", null);
             if (user != null) payload.put("user", user);
+            // frequency_penalty / presence_penalty
+            if (req.rawRequest.has("frequency_penalty")) {
+                payload.put("frequency_penalty", req.rawRequest.get("frequency_penalty"));
+            }
+            if (req.rawRequest.has("presence_penalty")) {
+                payload.put("presence_penalty", req.rawRequest.get("presence_penalty"));
+            }
         }
 
         return payload;
@@ -245,11 +252,48 @@ public class GlmBackend implements LocalApiGateway.Backend {
             case "deepseek-chat":
             case "deepseek-coder":
                 return "glm-4-flash";
+            // Qwen 系列 (阿里通义千问)
+            case "qwen-turbo":
+            case "qwen-plus":
+                return "glm-4-flash";
+            case "qwen-max":
+            case "qwen-max-longcontext":
+                return "glm-4-plus";
+            // Yi 系列 (零一万物)
+            case "yi-large":
+                return "glm-4-plus";
+            case "yi-medium":
+            case "yi-spark":
+                return "glm-4-flash";
+            // Moonshot (月之暗面)
+            case "moonshot-v1-8k":
+            case "moonshot-v1-32k":
+                return "glm-4-flash";
+            case "moonshot-v1-128k":
+                return "glm-4-long";
+            // Llama 系列 (Meta)
+            case "llama3-70b":
+            case "llama-3-70b":
+            case "llama3-8b":
+            case "llama-3-8b":
+                return "glm-4-flash";
+            // Mistral 系列
+            case "mistral-large":
+                return "glm-4-plus";
+            case "mistral-7b":
+            case "mixtral-8x7b":
+                return "glm-4-flash";
             default:
                 // 未知 gpt-* 模型 → glm-4
                 if (openaiModel.startsWith("gpt-")) return "glm-4";
                 if (openaiModel.startsWith("claude-")) return "glm-4-plus";
                 if (openaiModel.startsWith("gemini-")) return "glm-4";
+                if (openaiModel.startsWith("qwen-")) return "glm-4-flash";
+                if (openaiModel.startsWith("yi-")) return "glm-4-flash";
+                if (openaiModel.startsWith("moonshot-")) return "glm-4-flash";
+                if (openaiModel.startsWith("llama")) return "glm-4-flash";
+                if (openaiModel.startsWith("mistral") || openaiModel.startsWith("mixtral")) return "glm-4-flash";
+                if (openaiModel.startsWith("deepseek-")) return "glm-4-flash";
                 // 其他：透传（可能是 GLM 新模型）
                 return openaiModel;
         }

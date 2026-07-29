@@ -1,6 +1,6 @@
 id=com.glmkit.proxy
 name=GLMKit
-version=1.0.6
-versionCode=7
+version=1.0.7
+versionCode=8
 author=GLMKit
 description=GLM (智谱清言) 本地 API 反代增强模块。在设备上启动 OpenAI 兼容的本地 HTTP 端点，通过 Hook 目标应用的网络层捕获认证凭据，将外部请求透明转发到 GLM 后端，支持 SSE 流式响应。目标应用：com.zhipuai.qingyan。
