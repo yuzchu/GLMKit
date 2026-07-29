@@ -85,9 +85,9 @@ public final class LocalApiKeepAliveService extends Service {
                 Log.w(TAG, lastError, t);
             }
 
-            // 自确认 — 网关运行在同一进程，前台服务本身即保活
+            // 自确认 — 网关运行在目标应用进程中，通过 HTTP 检测状态
             lastAckElapsed = now;
-            lastGatewayRunning = LocalApiGateway.isRunning();
+            lastGatewayRunning = checkGatewayHttp();
 
             handler.postDelayed(this, HEARTBEAT_MS);
         }
@@ -257,6 +257,27 @@ public final class LocalApiKeepAliveService extends Service {
     // ════════════════════════════════════════════════════════════
     //  工具方法
     // ════════════════════════════════════════════════════════════
+
+    /**
+     * 通过 HTTP /healthz 检测网关状态。
+     * 网关运行在目标应用进程中，无法通过静态变量检测。
+     */
+    private boolean checkGatewayHttp() {
+        try {
+            int port = getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE)
+                    .getInt("port", 8765);
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
+                new java.net.URL("http://127.0.0.1:" + port + "/healthz").openConnection();
+            conn.setConnectTimeout(1000);
+            conn.setReadTimeout(1000);
+            conn.setRequestMethod("GET");
+            boolean ok = (conn.getResponseCode() == 200);
+            conn.disconnect();
+            return ok;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
 
     private static SharedPreferences requestedPrefs(Context context) {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);

@@ -10,6 +10,7 @@ import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
+import de.robv.android.xposed.XSharedPreferences;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
@@ -335,13 +336,16 @@ public class Main implements IXposedHookLoadPackage {
 
                 Context ctx = appContext.getApplicationContext();
 
-                // 读取配置的端口
+                // 读取配置的端口 — 使用 XSharedPreferences 读取模块自身的偏好
+                // (模块运行在目标应用进程中，普通 SharedPreferences 读到的是目标应用的偏好)
                 int port = 8765;
                 try {
-                    port = ctx.getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE)
-                            .getInt("port", 8765);
+                    XSharedPreferences xPrefs = new XSharedPreferences("com.glmkit.proxy", "glmkit_settings");
+                    xPrefs.reload();
+                    xPrefs.makeReadable();
+                    port = xPrefs.getInt("port", 8765);
                     LocalApiGateway.setListenPort(port);
-                    log("配置监听端口: " + port);
+                    log("配置监听端口: " + port + " (从模块偏好读取)");
                 } catch (Throwable ignored) {}
 
                 GlmBackend backend = new GlmBackend(getCapture());
