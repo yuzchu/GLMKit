@@ -82,7 +82,7 @@ public final class LocalApiKeepAliveActivity extends Activity {
         int port = 8765;
         try {
             port = getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE)
-                    .getInt("local_api_port", 8765);
+                    .getInt("port", 8765);
         } catch (Throwable ignored) {}
 
         desc.setText("通过 Xposed 注入智谱清言，在本地启动 OpenAI 兼容 API 网关。\n"

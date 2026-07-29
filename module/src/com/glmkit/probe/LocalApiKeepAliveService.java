@@ -264,8 +264,14 @@ public final class LocalApiKeepAliveService extends Service {
      */
     private boolean checkGatewayHttp() {
         try {
-            int port = getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE)
-                    .getInt("port", 8765);
+            SharedPreferences settings = getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE);
+            int port;
+            if (settings.getBoolean("gateway_running", false)) {
+                int gwPort = settings.getInt("gateway_port", 0);
+                port = (gwPort >= 1024 && gwPort <= 65535) ? gwPort : settings.getInt("port", 8765);
+            } else {
+                port = settings.getInt("port", 8765);
+            }
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
                 new java.net.URL("http://127.0.0.1:" + port + "/healthz").openConnection();
             conn.setConnectTimeout(1000);

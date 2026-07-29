@@ -365,16 +365,34 @@ public final class SettingsActivity extends Activity {
     }
 
     /**
+     * 获取网关实际监听端口 — 优先使用广播报告的 gateway_port，
+     * 因为端口被占用时网关会回退到备用端口。
+     */
+    private int getEffectiveGatewayPort() {
+        SharedPreferences prefs = getPrefs();
+        if (prefs.getBoolean("gateway_running", false)) {
+            int gwPort = prefs.getInt("gateway_port", 0);
+            if (gwPort >= 1024 && gwPort <= 65535) return gwPort;
+        }
+        return getSavedPort();
+    }
+
+    /**
      * 异步检测网关状态 — 通过 HTTP 请求 /healthz 端点。
      * 网关运行在目标应用进程中，无法通过静态变量检测，必须发 HTTP 请求。
      */
     private void checkGatewayStatus() {
-        final int port = getSavedPort();
+        final int port = getEffectiveGatewayPort();
+        final int configuredPort = getSavedPort();
         new Thread(() -> {
             String result = httpGet("http://127.0.0.1:" + port + "/healthz", 2000);
             runOnUiThread(() -> {
                 if (result != null) {
-                    gatewayStatus.setText("本地网关：✅ 监听中 (端口 " + port + ")");
+                    String msg = "本地网关：✅ 监听中 (端口 " + port + ")";
+                    if (port != configuredPort) {
+                        msg += "\n⚠️ 端口已回退（配置: " + configuredPort + "）";
+                    }
+                    gatewayStatus.setText(msg);
                     gatewayStatus.setTextColor(0xFF388E3C);
                 } else {
                     gatewayStatus.setText("本地网关：⚠️ 未运行（请打开智谱清言）");
@@ -388,7 +406,7 @@ public final class SettingsActivity extends Activity {
      * 测试本地网关 — 请求诊断端点 /v1/diagnostic
      */
     private void testGateway() {
-        final int port = getSavedPort();
+        final int port = getEffectiveGatewayPort();
         diagResultText.setText("正在连接 http://127.0.0.1:" + port + "/v1/diagnostic ...");
         diagResultText.setTextColor(0xFF666666);
         diagResultText.setVisibility(View.VISIBLE);
@@ -410,7 +428,7 @@ public final class SettingsActivity extends Activity {
      * 测试模型列表 — 请求 /v1/models
      */
     private void testModels() {
-        final int port = getSavedPort();
+        final int port = getEffectiveGatewayPort();
         diagResultText.setText("正在请求 http://127.0.0.1:" + port + "/v1/models ...");
         diagResultText.setTextColor(0xFF666666);
         diagResultText.setVisibility(View.VISIBLE);
