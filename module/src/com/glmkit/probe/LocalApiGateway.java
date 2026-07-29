@@ -457,7 +457,7 @@ public class LocalApiGateway {
         JSONObject resp = new JSONObject();
         try {
             resp.put("module", "GLMKit");
-            resp.put("version", "1.0.13");
+            resp.put("version", "1.0.14");
             resp.put("gateway_running", isRunning());
             resp.put("listen_port", listenPort);
             resp.put("active_connections", activeConnections.get());
