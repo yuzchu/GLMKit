@@ -95,10 +95,16 @@ public class GlmBackend implements LocalApiGateway.Backend {
         }
 
         // 解析响应
-        if (req.stream) {
-            return parseStreamResponse(response, req, sink);
-        } else {
-            return parseNonStreamResponse(response, req);
+        try {
+            if (req.stream) {
+                return parseStreamResponse(response, req, sink);
+            } else {
+                return parseNonStreamResponse(response, req);
+            }
+        } catch (Exception e) {
+            // 确保异常时关闭 response body 防止连接泄漏
+            closeResponseBodyQuietly(response);
+            throw e;
         }
     }
 
@@ -410,6 +416,17 @@ public class GlmBackend implements LocalApiGateway.Backend {
         if (body == null) return null;
         Method byteStreamMethod = body.getClass().getMethod("byteStream");
         return (InputStream) byteStreamMethod.invoke(body);
+    }
+
+    private void closeResponseBodyQuietly(Object response) {
+        try {
+            Method bodyMethod = response.getClass().getMethod("body");
+            Object body = bodyMethod.invoke(response);
+            if (body != null) {
+                Method closeMethod = body.getClass().getMethod("close");
+                closeMethod.invoke(body);
+            }
+        } catch (Throwable ignored) {}
     }
 
     // ════════════════════════════════════════════════════════════

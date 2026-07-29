@@ -170,6 +170,28 @@ public class LocalApiGateway {
                             }
                         }
                     }
+                } catch (java.net.BindException be) {
+                    log("✗ 端口 " + listenPort + " 已被占用，网关启动失败: " + be.getMessage());
+                    // 尝试使用备用端口
+                    for (int altPort = listenPort + 1; altPort <= listenPort + 10; altPort++) {
+                        try {
+                            serverSocket = new ServerSocket();
+                            serverSocket.bind(new InetSocketAddress("127.0.0.1", altPort),
+                                              SOCKET_BACKLOG);
+                            listenPort = altPort;
+                            log("✓ 网关在备用端口 " + altPort + " 启动成功");
+                            while (running.get() && !serverSocket.isClosed()) {
+                                try {
+                                    Socket client = serverSocket.accept();
+                                    activeConnections.incrementAndGet();
+                                    workerPool.submit(() -> handleConnection(client));
+                                } catch (IOException e) {
+                                    if (running.get()) log("accept 异常: " + e.getMessage());
+                                }
+                            }
+                            return;
+                        } catch (Throwable ignored) {}
+                    }
                 } catch (Throwable t) {
                     log("网关启动失败: " + t.getMessage());
                 } finally {

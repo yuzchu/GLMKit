@@ -81,7 +81,7 @@ public final class XposedActivationProvider extends ContentProvider {
                 activated ? 1 : 0,
                 "com.glmkit.proxy",
                 "com.zhipuai.qingyan",
-                "1.0.1"
+                "1.0.3"
         });
         return cursor;
     }
