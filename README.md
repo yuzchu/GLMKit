@@ -29,7 +29,7 @@
 
 ### 1. 安装模块
 
-将构建好的 `glmkit-v1.0.30.apk` 安装到设备上。
+将构建好的 `glmkit-v1.0.31.apk` 安装到设备上。
 
 ### 2. 激活模块
 
@@ -146,7 +146,7 @@ export ANDROID_HOME=/path/to/android-sdk
 ./scripts/build.sh
 ```
 
-输出：`build/glmkit-v1.0.30.apk`
+输出：`build/glmkit-v1.0.31.apk`
 
 ## 🏗️ 架构设计
 
@@ -289,6 +289,7 @@ export ANDROID_HOME=/path/to/android-sdk
 
 | 版本 | 修复内容 |
 |------|----------|
+| v1.0.31 | 流式响应 JSON null 防护补全：`parseStreamResponse()` 中 `content`/`reasoning_content` 增量增加 `"null".equals()` 检查，与 `finish_reason` 和非流式解析处理一致 |
 | v1.0.30 | 非流式响应 JSON null 处理修复：`finish_reason`/`reasoning_content`/`content` 为 JSON null 时正确处理，与流式解析一致 |
 | v1.0.29 | `readinessDetail()` 诊断信息改用解析后的 best 值，与 `isReady()` 判定一致 |
 | v1.0.28 | KeepAliveActivity 状态区显示实际网关端口；SettingsActivity 使用说明端口号动态更新；README 版本引用和 Hook 策略描述修正 |

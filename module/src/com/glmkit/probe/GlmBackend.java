@@ -546,14 +546,14 @@ public class GlmBackend implements LocalApiGateway.Backend {
 
                 // 内容增量
                 String contentDelta = delta.optString("content", null);
-                if (contentDelta != null && !contentDelta.isEmpty()) {
+                if (contentDelta != null && !contentDelta.isEmpty() && !"null".equals(contentDelta)) {
                     fullContent.append(contentDelta);
                     sink.onText(contentDelta);
                 }
 
                 // 思考链增量 (GLM 特有)
                 String reasoningDelta = delta.optString("reasoning_content", null);
-                if (reasoningDelta != null && !reasoningDelta.isEmpty()) {
+                if (reasoningDelta != null && !reasoningDelta.isEmpty() && !"null".equals(reasoningDelta)) {
                     fullReasoning.append(reasoningDelta);
                     sink.onReasoning(reasoningDelta);
                 }
