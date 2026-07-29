@@ -29,7 +29,7 @@
 
 ### 1. 安装模块
 
-将构建好的 `glmkit-v1.0.5.apk` 安装到设备上。
+将构建好的 `glmkit-v1.0.25.apk` 安装到设备上。
 
 ### 2. 激活模块
 
@@ -108,6 +108,11 @@ glm-mod/
 │   ├── AndroidManifest.xml          # 模块 Manifest
 │   ├── module.prop                  # Xposed 模块属性
 │   ├── libs/                        # 依赖 JAR（如有）
+│   ├── assets/
+│   │   ├── xposed_init              # 入口类
+│   │   └── xposed/
+│   │       ├── scope.list           # 作用域：com.zhipuai.qingyan
+│   │       └── java_init.list       # 入口类：com.glmkit.probe.Main
 │   ├── res/
 │   │   ├── values/strings.xml       # 英文字符串
 │   │   └── values-zh/strings.xml    # 中文字符串
@@ -121,9 +126,7 @@ glm-mod/
 │   │   ├── SettingsActivity.java    # 模块设置界面
 │   │   ├── XposedActivationProvider.java   # 激活检测 Provider
 │   │   └── XposedActivationReceiver.java   # 状态广播接收器
-│   └── xposed/
-│       ├── scope.list               # 作用域：com.zhipuai.qingyan
-│       └── java_init.list           # 入口类：com.glmkit.probe.Main
+│   └── ...
 └── scripts/
     └── build.sh                     # 构建脚本
 ```
@@ -143,7 +146,7 @@ export ANDROID_HOME=/path/to/android-sdk
 ./scripts/build.sh
 ```
 
-输出：`build/glmkit-v1.0.5.apk`
+输出：`build/glmkit-v1.0.25.apk`
 
 ## 🏗️ 架构设计
 
@@ -286,11 +289,23 @@ export ANDROID_HOME=/path/to/android-sdk
 
 | 版本 | 修复内容 |
 |------|----------|
-| v1.0.5 | 新增 `/v1/diagnostic` 诊断端点（模块版本、网关状态、后端捕获详情、智能提示） |
-| v1.0.4 | GLM API URL 提取逻辑修复（`/api/paas/v4` 路径不再被截断）；Content-Length 健壮性（413/400 错误码） |
-| v1.0.3 | Response body 泄漏修复；端口被占用时自动尝试备用端口（port+1~port+10） |
-| v1.0.2 | 端口配置生效修复；CORS preflight (OPTIONS) 支持；版本号硬编码修复 |
-| v1.0.1 | GlmBackend 清理不存在方法调用；KeepAliveService acknowledge 修复；NPE 防护；重复 hook 防护 |
+| v1.0.25 | `isReady()` 增加认证凭证检查；`GatewayException` 状态码透传修复 |
+| v1.0.24 | 健康检查优先使用实际网关端口；KeepAliveActivity 端口键名修复 |
+| v1.0.23 | `getModuleVersion()` 使用模块包名；广播报告实际绑定端口 |
+| v1.0.22 | 端口范围下限修正 (≥1024)；KeepAliveActivity 端口动态读取 |
+| v1.0.21 | 端口配置改用 XSharedPreferences 跨进程传递；保活服务网关状态改 HTTP 检查 |
+| v1.0.20 | 激活广播机制；网关状态异步 HTTP 检查 |
+| v1.0.19 | UI 深色→浅色主题；诊断按钮；KeepAliveActivity 主题修正 |
+| v1.0.18 | LSPosed 识别修复：Manifest meta-data + assets/xposed_init + java_init.list |
+| v1.0.17 | 模型别名扩展；stream_options/logit_bias 等参数透传；o1 模型映射 |
+| v1.0.16 | chunked encoding 支持；finish_reason JSON null 修复 |
+| v1.0.15 | module.prop 版本同步；大小写不敏感模型映射；getBestBaseUrl 修复 |
+| v1.0.14 | URL 查询参数剥离；版本号动态读取 |
+| v1.0.5 | 新增 `/v1/diagnostic` 诊断端点 |
+| v1.0.4 | GLM API URL 提取逻辑修复；Content-Length 健壮性 |
+| v1.0.3 | Response body 泄漏修复；端口占用自动备用端口 |
+| v1.0.2 | 端口配置生效；CORS preflight 支持；版本号硬编码修复 |
+| v1.0.1 | GlmBackend 方法修复；NPE 防护；重复 hook 防护 |
 | v1.0.0 | 初始版本 |
 
 ## 📄 许可证

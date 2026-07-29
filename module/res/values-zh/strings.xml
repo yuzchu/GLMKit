@@ -15,5 +15,5 @@
     <string name="settings_keepalive_start">启动保活</string>
     <string name="settings_keepalive_stop">停止保活</string>
     <string name="settings_about">关于</string>
-    <string name="settings_about_text">GLMKit v1.0.0\nGLM 本地 API 反代增强模块\n基于 Xposed 框架\n\n用法：\n1. 在 Xposed 管理器中激活本模块\n2. 选择作用域：智谱清言\n3. 重启智谱清言\n4. 使用 http://127.0.0.1:8765/v1 作为 OpenAI 兼容 API 端点</string>
+    <string name="settings_about_text">GLMKit\nGLM 本地 API 反代增强模块\n基于 Xposed 框架\n\n用法：\n1. 在 LSPosed 管理器中激活本模块\n2. 选择作用域：智谱清言\n3. 重启智谱清言\n4. 使用 http://127.0.0.1:8765/v1 作为 OpenAI 兼容 API 端点</string>
 </resources>
