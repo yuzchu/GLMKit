@@ -299,16 +299,13 @@ public final class SettingsActivity extends Activity {
                 ? "✅ 智谱清言 v" + targetVersion
                 : "❌ 未安装智谱清言"));
 
-        // 检查网关状态
+        // 检查网关状态（异步 HTTP 检测，因为网关运行在目标应用进程中）
+        gatewayStatus.setText("本地网关：查询中...");
+        checkGatewayStatus();
+
+        // 错误（从保活服务状态获取）
         Bundle status = new Bundle();
         LocalApiKeepAliveService.putStatus(status);
-        boolean gatewayRunning = status.getBoolean("gateway_running", false);
-        boolean keepAliveRunning = status.getBoolean("running", false);
-        gatewayStatus.setText("本地网关：" + (gatewayRunning
-                ? "✅ 监听中 (端口 " + getSavedPort() + ")"
-                : "⚠️ 未运行") + (keepAliveRunning ? "  |  保活：✅" : ""));
-
-        // 错误
         String error = status.getString("error", "");
         if (TextUtils.isEmpty(error)) {
             errorText.setVisibility(View.GONE);
@@ -365,6 +362,26 @@ public final class SettingsActivity extends Activity {
             Toast.makeText(this, "打开失败：" + t.getMessage(),
                     Toast.LENGTH_SHORT).show();
         }
+    }
+
+    /**
+     * 异步检测网关状态 — 通过 HTTP 请求 /healthz 端点。
+     * 网关运行在目标应用进程中，无法通过静态变量检测，必须发 HTTP 请求。
+     */
+    private void checkGatewayStatus() {
+        final int port = getSavedPort();
+        new Thread(() -> {
+            String result = httpGet("http://127.0.0.1:" + port + "/healthz", 2000);
+            runOnUiThread(() -> {
+                if (result != null) {
+                    gatewayStatus.setText("本地网关：✅ 监听中 (端口 " + port + ")");
+                    gatewayStatus.setTextColor(0xFF388E3C);
+                } else {
+                    gatewayStatus.setText("本地网关：⚠️ 未运行（请打开智谱清言）");
+                    gatewayStatus.setTextColor(0xFFFF6600);
+                }
+            });
+        }, "glmkit-health-check").start();
     }
 
     /**
@@ -447,20 +464,26 @@ public final class SettingsActivity extends Activity {
 
     /**
      * 检测 Xposed 是否已激活注入。
-     * 通过尝试加载 Xposed API 类或检查已知标记来判断。
+     *
+     * 检测策略：
+     * 1. 检查 xposed_hooked 标记 — 由 XposedActivationReceiver 在目标进程中
+     *    收到 HOOK_STARTED 广播后设置。这是最可靠的检测方式。
+     * 2. 检查 auth_captured 标记 — 认证信息已捕获，说明 hook 已生效。
+     * 3. 检查 gateway_running 标记 — 网关已启动。
+     *
+     * 注意：XposedActivationProvider.isActivated() 在模块自身进程中始终为 true
+     * （ContentProvider.onCreate 总会被调用），因此不能用于检测 Xposed 是否
+     * 真正注入了目标应用。
      */
     private boolean isXposedActive() {
-        // 方法1：检查 XposedActivationProvider 是否被 Xposed 调用过
-        if (XposedActivationProvider.isActivated()) return true;
-
-        // 方法2：检查 de.robv.android.xposed.XposedBridge 是否可加载
-        try {
-            Class.forName("de.robv.android.xposed.XposedBridge");
-            return true;
-        } catch (ClassNotFoundException ignored) {}
-
-        // 方法3：检查模块自身的 hook 标记
-        return getPrefs().getBoolean("xposed_hooked", false);
+        SharedPreferences prefs = getPrefs();
+        // 方法1：检查 hook 启动标记（由广播设置）
+        if (prefs.getBoolean("xposed_hooked", false)) return true;
+        // 方法2：检查认证捕获标记
+        if (prefs.getBoolean("auth_captured", false)) return true;
+        // 方法3：检查网关启动标记
+        if (prefs.getBoolean("gateway_running", false)) return true;
+        return false;
     }
 
     private boolean isTargetInstalled() {

@@ -1,6 +1,7 @@
 package com.glmkit.probe;
 
 import android.content.Context;
+import android.content.Intent;
 
 import java.lang.reflect.Method;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -64,6 +65,9 @@ public class Main implements IXposedHookLoadPackage {
                         appContext = (Context) param.thisObject;
                         log("宿主 Application.onCreate 完成，获取 Context");
 
+                        // 通知模块自身进程：hook 已启动
+                        broadcastActivation("com.glmkit.proxy.HOOK_STARTED");
+
                         // 延迟启动网关，等待 OkHttp 捕获
                         startGatewayWhenReady();
                     }
@@ -90,6 +94,9 @@ public class Main implements IXposedHookLoadPackage {
                         // 保存捕获的 OkHttpClient
                         getCapture().setOkHttpClient(client);
                         log("捕获 OkHttpClient 实例");
+
+                        // 通知模块自身进程：认证信息捕获成功
+                        broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
 
                         // 尝试添加网络拦截器来捕获请求详情
                         installCaptureInterceptor(client, cl);
@@ -317,6 +324,10 @@ public class Main implements IXposedHookLoadPackage {
                     waited += 500;
                 }
 
+                if (getCapture().getOkHttpClient() == null) {
+                    log("⚠️ 等待 OkHttp 客户端超时 (30s)，网关将以未就绪状态启动");
+                }
+
                 if (appContext == null) {
                     log("Context 为空，无法启动网关");
                     return;
@@ -325,8 +336,9 @@ public class Main implements IXposedHookLoadPackage {
                 Context ctx = appContext.getApplicationContext();
 
                 // 读取配置的端口
+                int port = 8765;
                 try {
-                    int port = ctx.getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE)
+                    port = ctx.getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE)
                             .getInt("port", 8765);
                     LocalApiGateway.setListenPort(port);
                     log("配置监听端口: " + port);
@@ -336,10 +348,40 @@ public class Main implements IXposedHookLoadPackage {
                 LocalApiGateway.start(ctx, backend);
                 log("本地 API 网关已启动");
 
+                // 通知模块自身进程：网关已启动
+                Intent gatewayIntent = new Intent("com.glmkit.proxy.GATEWAY_STARTED");
+                gatewayIntent.setPackage("com.glmkit.proxy");
+                gatewayIntent.putExtra("port", port);
+                try {
+                    ctx.sendBroadcast(gatewayIntent);
+                    log("发送网关启动广播");
+                } catch (Throwable ignored) {}
+
             } catch (Throwable t) {
                 log("启动网关失败: " + t.getMessage());
             }
         }, "glmkit-gateway-init").start();
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  激活广播 — 通知模块自身进程记录激活状态
+    // ════════════════════════════════════════════════════════════
+
+    /**
+     * 向模块自身包发送显式广播，通知 XposedActivationReceiver 记录状态。
+     * 广播从目标应用进程发出，由模块自身进程的 Receiver 接收。
+     */
+    private void broadcastActivation(String action) {
+        try {
+            Intent intent = new Intent(action);
+            intent.setPackage("com.glmkit.proxy");
+            if (appContext != null) {
+                appContext.sendBroadcast(intent);
+                log("发送激活广播: " + action);
+            }
+        } catch (Throwable t) {
+            log("发送激活广播失败: " + t.getMessage());
+        }
     }
 
     // ════════════════════════════════════════════════════════════
