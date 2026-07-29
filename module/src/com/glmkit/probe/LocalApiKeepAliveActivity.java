@@ -146,7 +146,7 @@ public final class LocalApiKeepAliveActivity extends Activity {
         TextView footer = new TextView(this);
         footer.setText("\n提示：请确保在 LSPosed/Xposed 中已勾选智谱清言作为作用域。");
         footer.setTextSize(12f);
-        footer.setTextColor(0xFF888888);
+        footer.setTextColor(0xFF666666);
         footer.setPadding(0, 32, 0, 0);
         root.addView(footer);
 

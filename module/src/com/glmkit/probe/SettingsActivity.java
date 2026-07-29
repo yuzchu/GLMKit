@@ -19,6 +19,11 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+
 /**
  * 模块设置 Activity — 主入口界面。
  *
@@ -45,6 +50,7 @@ public final class SettingsActivity extends Activity {
     private EditText portInput;
     private Switch keepAliveSwitch;
     private TextView errorText;
+    private TextView diagResultText;
 
     // ════════════════════════════════════════════════════════════
     //  生命周期
@@ -75,13 +81,14 @@ public final class SettingsActivity extends Activity {
         TextView title = new TextView(this);
         title.setText("GLMKit — GLM 本地 API 反代");
         title.setTextSize(22f);
+        title.setTextColor(0xFF1A1A1A);
         title.setPadding(0, 0, 0, 8);
         root.addView(title);
 
         TextView subtitle = new TextView(this);
         subtitle.setText("Xposed 增强模块 for 智谱清言");
         subtitle.setTextSize(14f);
-        subtitle.setTextColor(0xFF888888);
+        subtitle.setTextColor(0xFF666666);
         subtitle.setPadding(0, 0, 0, 24);
         root.addView(subtitle);
 
@@ -134,7 +141,7 @@ public final class SettingsActivity extends Activity {
         TextView apiLabel = new TextView(this);
         apiLabel.setText("API 端点：");
         apiLabel.setTextSize(13f);
-        apiLabel.setTextColor(0xFF888888);
+        apiLabel.setTextColor(0xFF666666);
         apiLabel.setPadding(16, 8, 0, 0);
         root.addView(apiLabel);
 
@@ -171,7 +178,7 @@ public final class SettingsActivity extends Activity {
         TextView keepAliveDesc = new TextView(this);
         keepAliveDesc.setText("防止智谱清言进程被系统冻结，确保本地 API 持续可用");
         keepAliveDesc.setTextSize(12f);
-        keepAliveDesc.setTextColor(0xFF888888);
+        keepAliveDesc.setTextColor(0xFF666666);
         keepAliveDesc.setPadding(16, 0, 0, 16);
         root.addView(keepAliveDesc);
 
@@ -207,6 +214,35 @@ public final class SettingsActivity extends Activity {
         buttonRow.addView(openKeepAliveBtn, kaParams);
         root.addView(buttonRow);
 
+        // ── 诊断测试 ──
+        root.addView(sectionLabel("诊断测试"));
+        LinearLayout diagRow = new LinearLayout(this);
+        diagRow.setOrientation(LinearLayout.HORIZONTAL);
+        diagRow.setGravity(Gravity.CENTER);
+        diagRow.setPadding(0, 8, 0, 8);
+
+        Button testGatewayBtn = new Button(this);
+        testGatewayBtn.setText("测试网关");
+        testGatewayBtn.setOnClickListener(v -> testGateway());
+        diagRow.addView(testGatewayBtn);
+
+        Button testModelsBtn = new Button(this);
+        testModelsBtn.setText("测试模型列表");
+        testModelsBtn.setOnClickListener(v -> testModels());
+        LinearLayout.LayoutParams tmParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        tmParams.leftMargin = 16;
+        diagRow.addView(testModelsBtn, tmParams);
+        root.addView(diagRow);
+
+        diagResultText = new TextView(this);
+        diagResultText.setTextSize(12f);
+        diagResultText.setTypeface(android.graphics.Typeface.MONOSPACE);
+        diagResultText.setPadding(16, 8, 16, 16);
+        diagResultText.setVisibility(View.GONE);
+        root.addView(diagResultText);
+
         // ── 使用说明 ──
         root.addView(sectionLabel("使用说明"));
         TextView helpText = new TextView(this);
@@ -236,7 +272,7 @@ public final class SettingsActivity extends Activity {
                 + "模块包名：com.glmkit.proxy\n"
                 + "目标应用：com.zhipuai.qingyan");
         aboutText.setTextSize(12f);
-        aboutText.setTextColor(0xFF888888);
+        aboutText.setTextColor(0xFF666666);
         aboutText.setPadding(16, 8, 0, 16);
         root.addView(aboutText);
 
@@ -331,6 +367,80 @@ public final class SettingsActivity extends Activity {
         }
     }
 
+    /**
+     * 测试本地网关 — 请求诊断端点 /v1/diagnostic
+     */
+    private void testGateway() {
+        final int port = getSavedPort();
+        diagResultText.setText("正在连接 http://127.0.0.1:" + port + "/v1/diagnostic ...");
+        diagResultText.setTextColor(0xFF666666);
+        diagResultText.setVisibility(View.VISIBLE);
+        new Thread(() -> {
+            String result = httpGet("http://127.0.0.1:" + port + "/v1/diagnostic", 4000);
+            runOnUiThread(() -> {
+                if (result == null) {
+                    diagResultText.setText("❌ 连接失败\n\n请确保：\n1. 模块已在 LSPosed 中激活\n2. 智谱清言已打开并运行\n3. 作用域已勾选智谱清言");
+                    diagResultText.setTextColor(0xFFF44336);
+                } else {
+                    diagResultText.setText("✅ 网关响应：\n\n" + result);
+                    diagResultText.setTextColor(0xFF388E3C);
+                }
+            });
+        }, "glmkit-diag").start();
+    }
+
+    /**
+     * 测试模型列表 — 请求 /v1/models
+     */
+    private void testModels() {
+        final int port = getSavedPort();
+        diagResultText.setText("正在请求 http://127.0.0.1:" + port + "/v1/models ...");
+        diagResultText.setTextColor(0xFF666666);
+        diagResultText.setVisibility(View.VISIBLE);
+        new Thread(() -> {
+            String result = httpGet("http://127.0.0.1:" + port + "/v1/models", 4000);
+            runOnUiThread(() -> {
+                if (result == null) {
+                    diagResultText.setText("❌ 连接失败\n\n请确保智谱清言已打开且模块已激活");
+                    diagResultText.setTextColor(0xFFF44336);
+                } else {
+                    diagResultText.setText("✅ 模型列表：\n\n" + result);
+                    diagResultText.setTextColor(0xFF388E3C);
+                }
+            });
+        }, "glmkit-models").start();
+    }
+
+    /**
+     * 简单 HTTP GET 请求，返回响应体字符串或 null（失败时）
+     */
+    private static String httpGet(String urlStr, int timeoutMs) {
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(urlStr);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(timeoutMs);
+            conn.setReadTimeout(timeoutMs);
+            conn.setRequestMethod("GET");
+            int code = conn.getResponseCode();
+            if (code != 200) return "HTTP " + code;
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), "UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (sb.length() > 0) sb.append('\n');
+                sb.append(line);
+            }
+            reader.close();
+            return sb.toString();
+        } catch (Throwable ignored) {
+            return null;
+        } finally {
+            if (conn != null) try { conn.disconnect(); } catch (Throwable ignored) {}
+        }
+    }
+
     // ════════════════════════════════════════════════════════════
     //  状态检测
     // ════════════════════════════════════════════════════════════
@@ -405,7 +515,10 @@ public final class SettingsActivity extends Activity {
         label.setText(text);
         label.setTextSize(16f);
         label.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        label.setPadding(0, 16, 0, 4);
+        label.setTextColor(0xFF333333);
+        label.setPadding(0, 20, 0, 6);
+        // 添加顶部分隔线
+        label.setBackgroundColor(0x11000000);
         return label;
     }
 
