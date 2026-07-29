@@ -104,10 +104,28 @@ public class GlmCapture {
         if (baseUrl != null) return baseUrl;
         if (apiUrl != null) {
             // 从完整 URL 提取 base
-            int idx = apiUrl.indexOf("/v1");
-            if (idx > 0) return apiUrl.substring(0, idx + 3);
-            idx = apiUrl.indexOf("/api");
+            // 1. 去除 /chat/completions 后缀
+            int idx = apiUrl.indexOf("/chat/completions");
             if (idx > 0) return apiUrl.substring(0, idx);
+            // 2. 查找 GLM 标准路径 /api/paas/v4
+            idx = apiUrl.indexOf("/api/paas/v4");
+            if (idx > 0) return apiUrl.substring(0, idx + 14);
+            // 3. 查找通用 /v1 或 /v4 版本路径
+            idx = apiUrl.indexOf("/v4/");
+            if (idx > 0) return apiUrl.substring(0, idx + 3);
+            idx = apiUrl.indexOf("/v1/");
+            if (idx > 0) return apiUrl.substring(0, idx + 3);
+            // 4. 查找 /api 并保留
+            idx = apiUrl.indexOf("/api");
+            if (idx > 0) {
+                // 保留 /api 及后续路径段（如 /api/paas/v4）
+                int nextSlash = apiUrl.indexOf('/', idx + 5);
+                if (nextSlash > 0) {
+                    int vIdx = apiUrl.indexOf("/v", nextSlash);
+                    if (vIdx > 0) return apiUrl.substring(0, vIdx + 3);
+                }
+                return apiUrl.substring(0, idx + 4);
+            }
         }
         return "https://open.bigmodel.cn/api/paas/v4";
     }

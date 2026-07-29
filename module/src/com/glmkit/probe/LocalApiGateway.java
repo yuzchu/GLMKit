@@ -290,15 +290,29 @@ public class LocalApiGateway {
             String contentLengthStr = headers.get("content-length");
             byte[] body = null;
             if (contentLengthStr != null) {
-                int contentLength = Integer.parseInt(contentLengthStr);
-                if (contentLength > 0 && contentLength < 10 * 1024 * 1024) {
-                    body = new byte[contentLength];
-                    int read = 0;
-                    while (read < contentLength) {
-                        int n = is.read(body, read, contentLength - read);
-                        if (n < 0) break;
-                        read += n;
+                try {
+                    int contentLength = Integer.parseInt(contentLengthStr.trim());
+                    if (contentLength < 0) {
+                        sendResponse(os, 400, "Bad Request", "text/plain", "Invalid Content-Length");
+                        return;
                     }
+                    if (contentLength > 10 * 1024 * 1024) {
+                        sendResponse(os, 413, "Payload Too Large", "text/plain",
+                                     "Body exceeds 10MB limit");
+                        return;
+                    }
+                    if (contentLength > 0) {
+                        body = new byte[contentLength];
+                        int read = 0;
+                        while (read < contentLength) {
+                            int n = is.read(body, read, contentLength - read);
+                            if (n < 0) break;
+                            read += n;
+                        }
+                    }
+                } catch (NumberFormatException nfe) {
+                    sendResponse(os, 400, "Bad Request", "text/plain", "Invalid Content-Length");
+                    return;
                 }
             }
 
