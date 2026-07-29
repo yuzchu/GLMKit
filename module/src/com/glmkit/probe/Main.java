@@ -349,13 +349,13 @@ public class Main implements IXposedHookLoadPackage {
                 } catch (Throwable ignored) {}
 
                 GlmBackend backend = new GlmBackend(getCapture());
-                LocalApiGateway.start(ctx, backend);
-                log("本地 API 网关已启动");
+                int actualPort = LocalApiGateway.start(ctx, backend);
+                log("本地 API 网关已启动，实际端口: " + actualPort);
 
                 // 通知模块自身进程：网关已启动
                 Intent gatewayIntent = new Intent("com.glmkit.proxy.GATEWAY_STARTED");
                 gatewayIntent.setPackage("com.glmkit.proxy");
-                gatewayIntent.putExtra("port", port);
+                gatewayIntent.putExtra("port", actualPort);
                 try {
                     ctx.sendBroadcast(gatewayIntent);
                     log("发送网关启动广播");

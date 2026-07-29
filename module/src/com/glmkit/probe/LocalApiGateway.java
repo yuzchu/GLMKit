@@ -159,22 +159,28 @@ public class LocalApiGateway {
         }
     }
 
-    public static void start(Context ctx, Backend b) {
+    public static int getListenPort() {
+        return listenPort;
+    }
+
+    public static int start(Context ctx, Backend b) {
         synchronized (LOCK) {
             if (running.get()) {
                 log("网关已在运行");
-                return;
+                return listenPort;
             }
             context = ctx.getApplicationContext();
             backend = b;
             running.set(true);
 
+            final java.util.concurrent.CountDownLatch bindLatch = new java.util.concurrent.CountDownLatch(1);
             acceptThread = new Thread(() -> {
                 try {
                     serverSocket = new ServerSocket();
                     serverSocket.bind(new InetSocketAddress("127.0.0.1", listenPort),
                                       SOCKET_BACKLOG);
                     log("网关监听 127.0.0.1:" + listenPort);
+                    bindLatch.countDown();
 
                     while (running.get() && !serverSocket.isClosed()) {
                         try {
@@ -197,6 +203,7 @@ public class LocalApiGateway {
                                               SOCKET_BACKLOG);
                             listenPort = altPort;
                             log("✓ 网关在备用端口 " + altPort + " 启动成功");
+                            bindLatch.countDown();
                             while (running.get() && !serverSocket.isClosed()) {
                                 try {
                                     Socket client = serverSocket.accept();
@@ -212,12 +219,15 @@ public class LocalApiGateway {
                 } catch (Throwable t) {
                     log("网关启动失败: " + t.getMessage());
                 } finally {
+                    bindLatch.countDown();
                     running.set(false);
                     log("网关线程退出");
                 }
             }, "glmkit-accept");
             acceptThread.setDaemon(true);
             acceptThread.start();
+            try { bindLatch.await(5, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+            return listenPort;
         }
     }
 
@@ -876,8 +886,9 @@ public class LocalApiGateway {
     private static String getModuleVersion() {
         if (context != null) {
             try {
+                // 使用模块自身的包名获取版本（context 是目标应用的 Context）
                 android.content.pm.PackageInfo pi = context.getPackageManager()
-                        .getPackageInfo(context.getPackageName(), 0);
+                        .getPackageInfo("com.glmkit.proxy", 0);
                 return pi.versionName;
             } catch (Throwable ignored) {}
         }
