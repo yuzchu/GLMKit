@@ -424,8 +424,8 @@ public class LocalApiGateway {
             JSONArray data = new JSONArray();
 
             String[] models = {
-                "glm-4", "glm-4-flash", "glm-4-plus", "glm-4-long",
-                "glm-4-air", "glm-4-airx", "glm-4v", "glm-4v-flash",
+                "glm-4", "glm-4-flash", "glm-4-flashx", "glm-4-plus", "glm-4-long",
+                "glm-4-air", "glm-4-airx", "glm-4v", "glm-4v-flash", "glm-4v-plus",
                 "glm-4-0520", "codegeex-4", "glm-4-alltools"
             };
 
@@ -449,7 +449,7 @@ public class LocalApiGateway {
         JSONObject resp = new JSONObject();
         try {
             resp.put("module", "GLMKit");
-            resp.put("version", "1.0.8");
+            resp.put("version", "1.0.9");
             resp.put("gateway_running", isRunning());
             resp.put("listen_port", listenPort);
             resp.put("active_connections", activeConnections.get());
@@ -517,6 +517,10 @@ public class LocalApiGateway {
         boolean stream = req.optBoolean("stream", false);
         double temperature = req.optDouble("temperature", 0.7);
         int maxTokens = req.optInt("max_tokens", 0);
+        // OpenAI 新版 API 使用 max_completion_tokens 替代 max_tokens
+        if (maxTokens == 0) {
+            maxTokens = req.optInt("max_completion_tokens", 0);
+        }
         double topP = req.optDouble("top_p", 1.0);
 
         String[] stop = null;

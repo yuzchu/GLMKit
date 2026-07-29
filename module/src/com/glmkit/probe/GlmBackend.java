@@ -205,6 +205,25 @@ public class GlmBackend implements LocalApiGateway.Backend {
             if (req.rawRequest.has("presence_penalty")) {
                 payload.put("presence_penalty", req.rawRequest.get("presence_penalty"));
             }
+            // logit_bias (token 偏置)
+            if (req.rawRequest.has("logit_bias")) {
+                payload.put("logit_bias", req.rawRequest.get("logit_bias"));
+            }
+            // n (生成数量)
+            if (req.rawRequest.has("n")) {
+                payload.put("n", req.rawRequest.get("n"));
+            }
+            // stream_options (流式 usage 统计)
+            if (req.rawRequest.has("stream_options")) {
+                payload.put("stream_options", req.rawRequest.get("stream_options"));
+            }
+            // logprobs / top_logprobs (对数概率)
+            if (req.rawRequest.has("logprobs")) {
+                payload.put("logprobs", req.rawRequest.get("logprobs"));
+            }
+            if (req.rawRequest.has("top_logprobs")) {
+                payload.put("top_logprobs", req.rawRequest.get("top_logprobs"));
+            }
         }
 
         return payload;
