@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MODULE_DIR="${PROJECT_DIR}/module"
 BUILD_DIR="${PROJECT_DIR}/build"
-APK_NAME="glmkit-v1.0.17.apk"
+APK_NAME="glmkit-v1.0.18.apk"
 
 # ── Android SDK 路径 ──────────────────────────────────────────
 ANDROID_JAR="${ANDROID_JAR:-}"
@@ -87,9 +87,9 @@ zip -j "${BUILD_DIR}/${APK_NAME}" classes.dex 2>/dev/null || \
   zip -j "${BUILD_DIR}/${APK_NAME}" *.dex
 cd "${SCRIPT_DIR}"
 
-# 添加 xposed 配置
+# 添加 xposed 配置 (assets/ 目录 + module.prop)
 cd "${MODULE_DIR}"
-zip -r "${BUILD_DIR}/${APK_NAME}" xposed/ module.prop
+zip -r "${BUILD_DIR}/${APK_NAME}" assets/ module.prop
 cd "${SCRIPT_DIR}"
 
 # 添加 libs (排除 XposedBridgeApi.jar — 运行时由框架提供)
@@ -116,7 +116,7 @@ if [[ ! -f "${KEYSTORE}" ]]; then
     -keyalg RSA -keysize 2048 -validity 10000 2>/dev/null
 fi
 
-SIGNED_APK="${BUILD_DIR}/glmkit-v1.0.17-signed.apk"
+SIGNED_APK="${BUILD_DIR}/glmkit-v1.0.18-signed.apk"
 if [[ -x "${APKSIGNER}" ]]; then
   "${APKSIGNER}" sign --ks "${KEYSTORE}" --ks-pass pass:android --key-pass pass:android \
     --out "${SIGNED_APK}" "${BUILD_DIR}/${APK_NAME}" 2>/dev/null
