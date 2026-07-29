@@ -303,8 +303,9 @@ public class LocalApiGateway {
                 }
             }
 
-            // 读取 body（如果有 Content-Length）
+            // 读取 body（Content-Length 或 chunked）
             String contentLengthStr = headers.get("content-length");
+            String transferEncoding = headers.get("transfer-encoding");
             byte[] body = null;
             if (contentLengthStr != null) {
                 try {
@@ -329,6 +330,13 @@ public class LocalApiGateway {
                     }
                 } catch (NumberFormatException nfe) {
                     sendResponse(os, 400, "Bad Request", "text/plain", "Invalid Content-Length");
+                    return;
+                }
+            } else if (transferEncoding != null && transferEncoding.toLowerCase().contains("chunked")) {
+                // 读取 chunked transfer encoding body
+                body = readChunkedBody(is);
+                if (body == null) {
+                    sendResponse(os, 400, "Bad Request", "text/plain", "Chunked body read failed");
                     return;
                 }
             }
@@ -449,7 +457,7 @@ public class LocalApiGateway {
         JSONObject resp = new JSONObject();
         try {
             resp.put("module", "GLMKit");
-            resp.put("version", "1.0.9");
+            resp.put("version", "1.0.10");
             resp.put("gateway_running", isRunning());
             resp.put("listen_port", listenPort);
             resp.put("active_connections", activeConnections.get());
@@ -765,6 +773,50 @@ public class LocalApiGateway {
             if (sb.length() > MAX_HEADER_BYTES) break;
         }
         return sb.toString();
+    }
+
+    /**
+     * 读取 HTTP/1.1 chunked transfer encoding body。
+     * 格式: <hex-size>\r\n<data>\r\n ... 0\r\n\r\n
+     */
+    private static byte[] readChunkedBody(InputStream is) throws IOException {
+        java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+        while (true) {
+            String sizeLine = readLine(is);
+            if (sizeLine == null) return null;
+            // 去除 chunk extension (分号后的内容)
+            String sizeStr = sizeLine.trim();
+            int semi = sizeStr.indexOf(';');
+            if (semi >= 0) sizeStr = sizeStr.substring(0, semi);
+            int chunkSize;
+            try {
+                chunkSize = Integer.parseInt(sizeStr, 16);
+            } catch (NumberFormatException e) {
+                return null;
+            }
+            if (chunkSize == 0) {
+                // 读取 trailing headers (空行结束)
+                while (true) {
+                    String trailer = readLine(is);
+                    if (trailer == null || trailer.isEmpty()) break;
+                }
+                break;
+            }
+            if (chunkSize < 0 || buf.size() + chunkSize > 10 * 1024 * 1024) {
+                return null; // 过大
+            }
+            byte[] chunk = new byte[chunkSize];
+            int read = 0;
+            while (read < chunkSize) {
+                int n = is.read(chunk, read, chunkSize - read);
+                if (n < 0) return null;
+                read += n;
+            }
+            buf.write(chunk);
+            // 读取 chunk 后的 \r\n
+            readLine(is);
+        }
+        return buf.toByteArray();
     }
 
     private static void sendResponse(OutputStream os, int status, String reason,

@@ -126,11 +126,15 @@ public class GlmBackend implements LocalApiGateway.Backend {
 
         // 解析响应
         try {
+            LocalApiGateway.CompletionResult result;
             if (req.stream) {
-                return parseStreamResponse(response, req, sink);
+                result = parseStreamResponse(response, req, sink);
             } else {
-                return parseNonStreamResponse(response, req);
+                result = parseNonStreamResponse(response, req);
             }
+            // 成功路径也确保关闭 response body
+            closeResponseBodyQuietly(response);
+            return result;
         } catch (Exception e) {
             // 确保异常时关闭 response body 防止连接泄漏
             closeResponseBodyQuietly(response);
@@ -239,6 +243,12 @@ public class GlmBackend implements LocalApiGateway.Backend {
         }
         // OpenAI 模型名 → GLM 模型名映射
         switch (openaiModel) {
+            // OpenAI o1 系列 (推理模型 → GLM + thinking)
+            case "o1-preview":
+            case "o1":
+                return "glm-4-plus";
+            case "o1-mini":
+                return "glm-4-flash";
             // GPT-4 系列
             case "gpt-4":
             case "gpt-4-1106-preview":
@@ -321,6 +331,8 @@ public class GlmBackend implements LocalApiGateway.Backend {
                 if (openaiModel.startsWith("llama")) return "glm-4-flash";
                 if (openaiModel.startsWith("mistral") || openaiModel.startsWith("mixtral")) return "glm-4-flash";
                 if (openaiModel.startsWith("deepseek-")) return "glm-4-flash";
+                if (openaiModel.startsWith("o1")) return "glm-4-plus";
+                if (openaiModel.startsWith("o3")) return "glm-4-plus";
                 // 其他：透传（可能是 GLM 新模型）
                 return openaiModel;
         }
@@ -558,7 +570,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
             }
         }
 
-        reader.close();
+        try { reader.close(); } catch (Throwable ignored) {}
 
         log("← GLM 流式完成: content=" + fullContent.length()
             + " chars, reasoning=" + fullReasoning.length() + " chars");
