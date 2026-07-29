@@ -43,6 +43,7 @@ public final class LocalApiKeepAliveService extends Service {
     private static volatile long lastBroadcastElapsed;
     private static volatile long lastAckElapsed;
     private static volatile boolean lastGatewayRunning;
+    private static volatile int lastGatewayPort;
     private static volatile String lastError = "";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -133,6 +134,7 @@ public final class LocalApiKeepAliveService extends Service {
         result.putBoolean("running", running);
         result.putBoolean("requested", running || startedElapsed > 0L);
         result.putBoolean("gateway_running", lastGatewayRunning);
+        result.putInt("gateway_port", lastGatewayPort);
         result.putLong("last_broadcast_age_ms", age(now, lastBroadcastElapsed));
         result.putLong("last_ack_age_ms", age(now, lastAckElapsed));
         result.putString("error", lastError == null ? "" : lastError);
@@ -279,6 +281,7 @@ public final class LocalApiKeepAliveService extends Service {
             conn.setRequestMethod("GET");
             boolean ok = (conn.getResponseCode() == 200);
             conn.disconnect();
+            if (ok) lastGatewayPort = port;
             return ok;
         } catch (Throwable t) {
             return false;

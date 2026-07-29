@@ -261,6 +261,7 @@ public final class SettingsActivity extends Activity {
               + "LangChain、OpenAI SDK 等工具。");
         helpText.setTextSize(13f);
         helpText.setPadding(16, 8, 0, 16);
+        helpText.setTag("help_text");
         root.addView(helpText);
 
         // ── 关于 ──
@@ -319,6 +320,24 @@ public final class SettingsActivity extends Activity {
         if (apiViewChild instanceof TextView) {
             ((TextView) apiViewChild).setText(
                     "http://127.0.0.1:" + getSavedPort() + "/v1/chat/completions");
+        }
+
+        // 更新使用说明中的端口号
+        View helpViewChild = findViewByTag(rootView(), "help_text");
+        if (helpViewChild instanceof TextView) {
+            ((TextView) helpViewChild).setText(
+                    "1. 在 LSPosed/Xposed 管理器中激活本模块\n"
+                  + "2. 勾选智谱清言 (com.zhipuai.qingyan) 作为作用域\n"
+                  + "3. 重启智谱清言（或重启设备）\n"
+                  + "4. 打开智谱清言并登录，模块将自动捕获认证信息\n"
+                  + "5. 使用以下地址作为 OpenAI 兼容 API 端点：\n"
+                  + "   http://127.0.0.1:" + getSavedPort() + "/v1\n\n"
+                  + "支持的 API 路由：\n"
+                  + "  POST /v1/chat/completions  — 对话补全（支持流式）\n"
+                  + "  GET  /v1/models            — 模型列表\n"
+                  + "  GET  /healthz              — 健康检查\n\n"
+                  + "兼容 OpenAI API 格式，可直接用于 ChatGPT 客户端、\n"
+                  + "LangChain、OpenAI SDK 等工具。");
         }
     }
 

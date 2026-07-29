@@ -183,6 +183,7 @@ public final class LocalApiKeepAliveActivity extends Activity {
 
         boolean running = status.getBoolean("running", false);
         boolean gatewayRunning = status.getBoolean("gateway_running", false);
+        int gatewayPort = status.getInt("gateway_port", 0);
         long broadcastAge = status.getLong("last_broadcast_age_ms", -1L);
         long ackAge = status.getLong("last_ack_age_ms", -1L);
         String error = status.getString("error", "");
@@ -204,6 +205,9 @@ public final class LocalApiKeepAliveActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("保活服务：").append(running ? "✅ 运行中" : "❌ 已停止").append('\n');
         sb.append("本地网关：").append(gatewayRunning ? "✅ 监听中" : "⚠️ 未启动").append('\n');
+        if (gatewayRunning && gatewayPort > 0) {
+            sb.append("实际端口：").append(gatewayPort).append('\n');
+        }
         sb.append("心跳广播：").append(formatAge(broadcastAge)).append('\n');
         sb.append("最近确认：").append(formatAge(ackAge));
         statusText.setText(sb.toString());

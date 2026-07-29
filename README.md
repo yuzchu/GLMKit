@@ -29,7 +29,7 @@
 
 ### 1. 安装模块
 
-将构建好的 `glmkit-v1.0.25.apk` 安装到设备上。
+将构建好的 `glmkit-v1.0.28.apk` 安装到设备上。
 
 ### 2. 激活模块
 
@@ -146,7 +146,7 @@ export ANDROID_HOME=/path/to/android-sdk
 ./scripts/build.sh
 ```
 
-输出：`build/glmkit-v1.0.25.apk`
+输出：`build/glmkit-v1.0.28.apk`
 
 ## 🏗️ 架构设计
 
@@ -250,9 +250,9 @@ export ANDROID_HOME=/path/to/android-sdk
 
 与参考项目 Deekseep（hook 混淆类名）不同，本模块采用更干净的策略：
 
-- **Hook `okhttp3.OkHttpClient$Builder`** — 拦截器链构建过程
-- **Hook `okhttp3.Interceptor$Chain`** — 每次请求的拦截器链
-- **Hook `okhttp3.Request`** — 请求 URL 和头部信息
+- **Hook `okhttp3.OkHttpClient$Builder.build()`** — 捕获 OkHttpClient 实例
+- **Hook `okhttp3.internal.connection.RealCall`** — 拦截 execute()/enqueue() 捕获请求 URL 和认证头
+- **Hook `retrofit2.Retrofit$Builder.build()`** — 捕获 Retrofit base URL
 
 这避免了依赖混淆类名，提高了对不同版本的兼容性。
 
@@ -289,6 +289,9 @@ export ANDROID_HOME=/path/to/android-sdk
 
 | 版本 | 修复内容 |
 |------|----------|
+| v1.0.28 | KeepAliveActivity 状态区显示实际网关端口；SettingsActivity 使用说明端口号动态更新；README 版本引用和 Hook 策略描述修正 |
+| v1.0.27 | 网关启动失败时不发送启动广播；KeepAliveActivity 端口标签修正 |
+| v1.0.26 | strings.xml 版本号动态化；README 版本引用和项目结构路径修正 |
 | v1.0.25 | `isReady()` 增加认证凭证检查；`GatewayException` 状态码透传修复 |
 | v1.0.24 | 健康检查优先使用实际网关端口；KeepAliveActivity 端口键名修复 |
 | v1.0.23 | `getModuleVersion()` 使用模块包名；广播报告实际绑定端口 |
