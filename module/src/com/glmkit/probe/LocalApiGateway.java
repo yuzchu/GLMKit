@@ -460,7 +460,7 @@ public class LocalApiGateway {
         JSONObject resp = new JSONObject();
         try {
             resp.put("module", "GLMKit");
-            resp.put("version", "1.0.16");
+            resp.put("version", getModuleVersion());
             resp.put("gateway_running", isRunning());
             resp.put("listen_port", listenPort);
             resp.put("active_connections", activeConnections.get());
@@ -871,6 +871,17 @@ public class LocalApiGateway {
         writeSseEvent(os, err.toString());
         os.write("data: [DONE]\r\n\r\n".getBytes(StandardCharsets.UTF_8));
         os.flush();
+    }
+
+    private static String getModuleVersion() {
+        if (context != null) {
+            try {
+                android.content.pm.PackageInfo pi = context.getPackageManager()
+                        .getPackageInfo(context.getPackageName(), 0);
+                return pi.versionName;
+            } catch (Throwable ignored) {}
+        }
+        return "unknown";
     }
 
     private static void log(String msg) {

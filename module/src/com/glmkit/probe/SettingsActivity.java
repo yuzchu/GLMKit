@@ -230,7 +230,7 @@ public final class SettingsActivity extends Activity {
         // ── 关于 ──
         root.addView(sectionLabel("关于"));
         TextView aboutText = new TextView(this);
-        aboutText.setText("GLMKit v1.0.9\n"
+        aboutText.setText("GLMKit v" + getModuleVersion() + "\n"
                 + "GLM (智谱清言) 本地 API 反代增强模块\n"
                 + "基于 Xposed 框架\n"
                 + "模块包名：com.glmkit.proxy\n"
@@ -365,6 +365,15 @@ public final class SettingsActivity extends Activity {
     private String getTargetVersion() {
         try {
             PackageInfo info = getPackageManager().getPackageInfo(TARGET_PACKAGE, 0);
+            return info.versionName;
+        } catch (PackageManager.NameNotFoundException e) {
+            return "?";
+        }
+    }
+
+    private String getModuleVersion() {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
             return info.versionName;
         } catch (PackageManager.NameNotFoundException e) {
             return "?";

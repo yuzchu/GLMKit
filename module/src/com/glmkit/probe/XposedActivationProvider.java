@@ -81,7 +81,7 @@ public final class XposedActivationProvider extends ContentProvider {
                 activated ? 1 : 0,
                 "com.glmkit.proxy",
                 "com.zhipuai.qingyan",
-                "1.0.9"
+                getModuleVersion()
         });
         return cursor;
     }
@@ -101,5 +101,17 @@ public final class XposedActivationProvider extends ContentProvider {
     @Override public int update(Uri uri, ContentValues values,
                                  String selection, String[] selectionArgs) {
         throw new UnsupportedOperationException("Read-only provider");
+    }
+
+    private String getModuleVersion() {
+        try {
+            Context context = getContext();
+            if (context != null) {
+                android.content.pm.PackageInfo pi = context.getPackageManager()
+                        .getPackageInfo(context.getPackageName(), 0);
+                return pi.versionName;
+            }
+        } catch (Throwable ignored) {}
+        return "unknown";
     }
 }
