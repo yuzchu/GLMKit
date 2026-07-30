@@ -126,6 +126,9 @@ public class Main implements IXposedHookLoadPackage {
         // 7. v1.0.53: Hook RequestBody.create 拦截请求体，提取真实 model ID
         hookRequestBodyCreate(lpparam.classLoader);
 
+        // 8. v1.0.62: Hook WebSocket — 聊天可能用 WebSocket 而非 HTTP
+        hookWebSocket(lpparam.classLoader);
+
         log("所有 hook 安装完成");
     }
 
@@ -1124,6 +1127,85 @@ public class Main implements IXposedHookLoadPackage {
     }
 
     // ════════════════════════════════════════════════════════════
+    //  v1.0.62: Hook WebSocket — 聊天可能用 WebSocket 而非 HTTP
+    // ════════════════════════════════════════════════════════════
+    private void hookWebSocket(ClassLoader cl) {
+        // hook RealWebSocket.send(String) — 拦截发出的 WebSocket 文本消息
+        for (String className : new String[]{
+                "okhttp3.internal.ws.RealWebSocket",
+                "nu.aq", "nu.ar", "nu.as", "nu.at", "nu.au"}) {
+            try {
+                Class<?> wsClass = cl.loadClass(className);
+                XposedHelpers.findAndHookMethod(wsClass, "send", String.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            try {
+                                String msg = (String) param.args[0];
+                                if (msg == null || msg.length() < 5) return;
+                                if (diagBodyLogCount.getAndIncrement() < 10) {
+                                    log("[DIAG] WebSocket.send (" + Math.min(300, msg.length()) + " chars): " +
+                                        msg.substring(0, Math.min(300, msg.length())));
+                                }
+                                // 提取 assistant_id 或 model
+                                String model = extractModelFromJson(msg);
+                                if (model != null && !model.isEmpty()) {
+                                    String old = getCapture().getCapturedModel();
+                                    getCapture().setCapturedModel(model);
+                                    if (old == null || !old.equals(model)) {
+                                        log("★★★ 捕获模型 ID (WebSocket.send): " + model);
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
+                        }
+                    });
+                log("✓ 安装 WebSocket.send hook (" + className + ")");
+                break;
+            } catch (Throwable ignored) {}
+        }
+
+        // hook WebSocketListener.onMessage — 拦截收到的 WebSocket 消息
+        for (String className : new String[]{
+                "okhttp3.WebSocketListener",
+                "nu.ap", "nu.aq", "nu.ar"}) {
+            try {
+                Class<?> listenerClass = cl.loadClass(className);
+                Class<?> wsInterface = null;
+                for (String wsName : new String[]{"okhttp3.WebSocket", "nu.aq", "nu.ar"}) {
+                    try { wsInterface = cl.loadClass(wsName); break; } catch (Throwable ignored) {}
+                }
+                if (wsInterface != null) {
+                    XposedHelpers.findAndHookMethod(listenerClass, "onMessage",
+                        wsInterface, String.class,
+                        new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                try {
+                                    String msg = (String) param.args[1];
+                                    if (msg == null || msg.length() < 5) return;
+                                    if (diagBodyLogCount.getAndIncrement() < 10) {
+                                        log("[DIAG] WebSocket.onMessage (" + Math.min(300, msg.length()) + " chars): " +
+                                            msg.substring(0, Math.min(300, msg.length())));
+                                    }
+                                    String model = extractModelFromJson(msg);
+                                    if (model != null && !model.isEmpty()) {
+                                        String old = getCapture().getCapturedModel();
+                                        getCapture().setCapturedModel(model);
+                                        if (old == null || !old.equals(model)) {
+                                            log("★★★ 捕获模型 ID (WebSocket.onMessage): " + model);
+                                        }
+                                    }
+                                } catch (Throwable ignored) {}
+                            }
+                        });
+                    log("✓ 安装 WebSocket.onMessage hook (" + className + ")");
+                    break;
+                }
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════
     //  v1.0.53: Hook RequestBody.create — 拦截请求体，提取真实 model ID
     // ════════════════════════════════════════════════════════════
     private void hookRequestBodyCreate(ClassLoader cl) {
@@ -1403,6 +1485,10 @@ public class Main implements IXposedHookLoadPackage {
      */
     private void tryExtractModelFromResponse(Object response, String urlStr) {
         try {
+            // v1.0.62: 诊断 — 确认方法被调用
+            if (diagBodyLogCount.get() < 10) {
+                log("[DIAG] tryExtractModelFromResponse: " + urlStr);
+            }
             // peekBody(long) — 读取响应体副本（不消耗原始 body）
             Method peekBodyMethod = null;
             for (Method m : response.getClass().getMethods()) {
@@ -1552,12 +1638,39 @@ public class Main implements IXposedHookLoadPackage {
      * - 嵌套 JSON
      */
     private String extractModelFromJson(String str) {
-        if (str == null || !str.contains("\"model\"")) return null;
+        if (str == null) return null;
+
+        // v1.0.62: GLM API 不用 "model" 字段，用 "assistant_id" + "chat_mode"
+        // 优先查找 "assistant_id"
+        String assistantId = extractJsonValue(str, "assistant_id");
+        if (assistantId != null && !assistantId.isEmpty()) {
+            // 同时提取 chat_mode 用于诊断
+            String chatMode = extractJsonValue(str, "chat_mode");
+            if (chatMode != null && !chatMode.isEmpty()) {
+                log("[DIAG] 捕获 assistant_id=" + assistantId + " chat_mode=" + chatMode);
+                return assistantId + ":" + chatMode;
+            }
+            log("[DIAG] 捕获 assistant_id=" + assistantId);
+            return assistantId;
+        }
+
+        // 回退到 "model" 字段（OpenAI 兼容格式）
+        String model = extractJsonValue(str, "model");
+        if (model != null && !model.isEmpty()) return model;
+
+        return null;
+    }
+
+    /** 从 JSON 字符串提取指定字段的字符串值（支持标准 JSON、SSE、正则） */
+    private String extractJsonValue(String str, String key) {
+        if (str == null || !str.contains("\"" + key + "\"")) return null;
+        String searchKey = "\"" + key + "\"";
+
+        // 尝试标准 JSON 解析
         try {
-            // 尝试标准 JSON 解析
             JSONObject json = new JSONObject(str);
-            String model = json.optString("model", null);
-            if (model != null && !model.isEmpty()) return model;
+            String val = json.optString(key, null);
+            if (val != null && !val.isEmpty()) return val;
         } catch (Throwable ignored) {}
 
         // 尝试 SSE 格式 — 每行 "data: {...}"
@@ -1565,23 +1678,22 @@ public class Main implements IXposedHookLoadPackage {
             String[] lines = str.split("\n");
             for (String line : lines) {
                 line = line.trim();
-                if (line.startsWith("data:") && line.contains("\"model\"")) {
+                if (line.startsWith("data:") && line.contains(searchKey)) {
                     String jsonPart = line.substring(5).trim();
                     if (jsonPart.startsWith("{")) {
                         JSONObject json = new JSONObject(jsonPart);
-                        String model = json.optString("model", null);
-                        if (model != null && !model.isEmpty()) return model;
+                        String val = json.optString(key, null);
+                        if (val != null && !val.isEmpty()) return val;
                     }
                 }
             }
         } catch (Throwable ignored) {}
 
-        // 最后尝试正则提取
+        // 正则提取
         try {
-            int idx = str.indexOf("\"model\"");
+            int idx = str.indexOf(searchKey);
             if (idx >= 0) {
-                // 找到 "model":"value" 或 "model": "value"
-                int colonIdx = str.indexOf(":", idx + 7);
+                int colonIdx = str.indexOf(":", idx + searchKey.length());
                 if (colonIdx >= 0) {
                     int startQuote = str.indexOf("\"", colonIdx + 1);
                     if (startQuote >= 0) {
