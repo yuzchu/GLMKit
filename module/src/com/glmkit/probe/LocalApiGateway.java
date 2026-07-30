@@ -495,7 +495,8 @@ public class LocalApiGateway {
 
         // API Key 验证 — 保护 /v1/ API 端点（/v1/diagnostic 除外）
         if (gatewayApiKey != null && path.startsWith("/v1/")
-                && !"/v1/diagnostic".equals(path)) {
+                && !"/v1/diagnostic".equals(path)
+                && !"/v1/models".equals(path)) {
             String authHeader = headers.get("authorization");
             String providedKey = null;
             if (authHeader != null) {
@@ -562,21 +563,27 @@ public class LocalApiGateway {
 
     private static java.util.List<String> getPersistentModels() {
         java.util.List<String> models = new java.util.ArrayList<>();
-        if (context == null) return models;
-        try {
-            SharedPreferences prefs = context.getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE);
-            String json = prefs.getString(PREF_MODELS_KEY, null);
-            if (json != null && !json.isEmpty()) {
-                JSONArray arr = new JSONArray(json);
-                for (int i = 0; i < arr.length(); i++) {
-                    String m = arr.getString(i);
-                    if (m != null && !m.isEmpty() && !models.contains(m)) {
-                        models.add(m);
+        if (context != null) {
+            try {
+                SharedPreferences prefs = context.getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE);
+                String json = prefs.getString(PREF_MODELS_KEY, null);
+                if (json != null && !json.isEmpty()) {
+                    JSONArray arr = new JSONArray(json);
+                    for (int i = 0; i < arr.length(); i++) {
+                        String m = arr.getString(i);
+                        if (m != null && !m.isEmpty() && !models.contains(m)) {
+                            models.add(m);
+                        }
                     }
                 }
+            } catch (Throwable t) {
+                log("读取持久化模型列表失败: " + t.getMessage());
             }
-        } catch (Throwable t) {
-            log("读取持久化模型列表失败: " + t.getMessage());
+        }
+        // 空列表时返回两个默认模型
+        if (models.isEmpty()) {
+            models.add("65940acff94777010aa6b796:thinking");
+            models.add("65940acff94777010aa6b796:fast");
         }
         return models;
     }
@@ -1123,6 +1130,7 @@ public class LocalApiGateway {
     //  Web UI 控制面板
     // ════════════════════════════════════════════════════════════
     private static String getWebUI() {
+        String apiKey = (gatewayApiKey != null) ? gatewayApiKey : "";
         return "<!DOCTYPE html><html lang=\"zh\"><head><meta charset=\"utf-8\">"
             + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             + "<title>GLMKit 控制面板</title><style>"
@@ -1175,6 +1183,8 @@ public class LocalApiGateway {
 
             + "<script>"
             + "const B=document.baseURI.replace(/\\/$/, '');"
+            + "const AK='" + apiKey + "';"
+            + "function auth(h){if(AK){h['Authorization']='Bearer '+AK;}return h;}"
 
             // 加载状态
             + "function loadStatus(){"
@@ -1196,7 +1206,7 @@ public class LocalApiGateway {
 
             // 加载模型列表
             + "function loadModels(){"
-            + "fetch(B+'/v1/models').then(r=>r.json()).then(d=>{"
+            + "fetch(B+'/v1/models',{headers:auth({})}).then(r=>r.json()).then(d=>{"
             + "let el=document.getElementById('modelList');"
             + "if(!d.data||d.data.length===0){el.innerHTML='<div class=status>暂无模型，点击上方捕获按钮添加</div>';return;}"
             + "el.innerHTML=d.data.map(m=>"
@@ -1208,7 +1218,7 @@ public class LocalApiGateway {
 
             // 捕获模型
             + "function captureModel(){"
-            + "fetch(B+'/v1/models/capture',{method:'POST'}).then(r=>r.json()).then(d=>{"
+            + "fetch(B+'/v1/models/capture',{method:'POST',headers:auth({})}).then(r=>r.json()).then(d=>{"
             + "alert(d.message||'操作完成');loadStatus();"
             + "}).catch(e=>{alert('捕获失败: '+e);});"
             + "}"
@@ -1217,7 +1227,7 @@ public class LocalApiGateway {
             + "function addModel(){"
             + "let m=document.getElementById('newModel').value.trim();"
             + "if(!m)return;"
-            + "fetch(B+'/v1/models/add',{method:'POST',headers:{'Content-Type':'application/json'},"
+            + "fetch(B+'/v1/models/add',{method:'POST',headers:auth({'Content-Type':'application/json'}),"
             + "body:JSON.stringify({model:m})}).then(r=>r.json()).then(d=>{"
             + "alert(d.message||'操作完成');document.getElementById('newModel').value='';loadModels();"
             + "}).catch(e=>{alert('添加失败: '+e);});"
@@ -1226,7 +1236,7 @@ public class LocalApiGateway {
             // 删除模型
             + "function delModel(m){"
             + "if(!confirm('确认删除模型: '+m+'?'))return;"
-            + "fetch(B+'/v1/models/delete',{method:'POST',headers:{'Content-Type':'application/json'},"
+            + "fetch(B+'/v1/models/delete',{method:'POST',headers:auth({'Content-Type':'application/json'}),"
             + "body:JSON.stringify({model:m})}).then(r=>r.json()).then(d=>{"
             + "alert(d.message||'操作完成');loadModels();"
             + "}).catch(e=>{alert('删除失败: '+e);});"
@@ -1240,7 +1250,7 @@ public class LocalApiGateway {
             + "let log=document.getElementById('chatLog');"
             + "log.innerHTML+='<span class=warn>我: </span>'+msg+'\\n';"
             + "let btn=event.target;btn.disabled=true;btn.textContent='发送中...';"
-            + "fetch(B+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},"
+            + "fetch(B+'/v1/chat/completions',{method:'POST',headers:auth({'Content-Type':'application/json'}),"
             + "body:JSON.stringify({model:model||undefined,messages:[{role:'user',content:msg}],stream:false})})"
             + ".then(r=>r.json()).then(d=>{"
             + "if(d.error){log.innerHTML+='<span class=err>错误: '+d.error.message+'</span>\\n';}"
