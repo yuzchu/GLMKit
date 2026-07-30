@@ -46,13 +46,13 @@
 **API 端点：**
 
 ```
-http://127.0.0.1:8765/v1
+http://127.0.0.1:16766/v1
 ```
 
 **对话补全示例：**
 
 ```bash
-curl http://127.0.0.1:8765/v1/chat/completions \
+curl http://127.0.0.1:16766/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "glm-4",
@@ -66,7 +66,7 @@ curl http://127.0.0.1:8765/v1/chat/completions \
 **流式响应示例：**
 
 ```bash
-curl http://127.0.0.1:8765/v1/chat/completions \
+curl http://127.0.0.1:16766/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "glm-4",
@@ -80,23 +80,23 @@ curl http://127.0.0.1:8765/v1/chat/completions \
 **模型列表：**
 
 ```bash
-curl http://127.0.0.1:8765/v1/models
+curl http://127.0.0.1:16766/v1/models
 ```
 
 **健康检查：**
 
 ```bash
-curl http://127.0.0.1:8765/healthz
+curl http://127.0.0.1:16766/healthz
 ```
 
 ### 4. 在第三方工具中使用
 
 | 工具 | 配置方式 |
 |------|----------|
-| OpenAI Python SDK | `base_url="http://127.0.0.1:8765/v1"`, `api_key="any"` |
-| LangChain | `OpenAI(base_url="http://127.0.0.1:8765/v1", api_key="any")` |
-| ChatGPT Next Web | API 地址设为 `http://127.0.0.1:8765` |
-| LobeChat | 自定义 OpenAI 提供商，地址 `http://127.0.0.1:8765/v1` |
+| OpenAI Python SDK | `base_url="http://127.0.0.1:16766/v1"`, `api_key="any"` |
+| LangChain | `OpenAI(base_url="http://127.0.0.1:16766/v1", api_key="any")` |
+| ChatGPT Next Web | API 地址设为 `http://127.0.0.1:16766` |
+| LobeChat | 自定义 OpenAI 提供商，地址 `http://127.0.0.1:16766/v1` |
 
 > **注意：** `api_key` 可以填任意值，认证由模块通过捕获的凭据自动处理。
 
@@ -167,7 +167,7 @@ export ANDROID_HOME=/path/to/android-sdk
 │                            │                         │
 │                     ┌──────▼──────┐                 │
 │                     │ HTTP Server  │                 │
-│                     │  port 8765   │                 │
+│                     │  port 16766   │                 │
 │                     └──────────────┘                 │
 └──────────────────────────────────────────────────────┘
                             │
@@ -182,7 +182,7 @@ export ANDROID_HOME=/path/to/android-sdk
 
 1. **Xposed 注入** — 模块在智谱清言进程启动时被加载
 2. **Hook OkHttp** — 拦截器捕获每次 HTTP 请求的认证头和 API 端点
-3. **启动网关** — 在设备本地 `127.0.0.1:8765` 启动 HTTP 服务器
+3. **启动网关** — 在设备本地 `127.0.0.1:16766` 启动 HTTP 服务器
 4. **请求转发** — 外部客户端发送 OpenAI 格式请求 → 网关转换为 GLM 格式 → 使用捕获的 OkHttp 客户端发送 → 解析 GLM 响应 → 转换回 OpenAI 格式返回
 5. **SSE 流式** — 支持流式响应，逐 token 转发
 
@@ -238,7 +238,7 @@ export ANDROID_HOME=/path/to/android-sdk
 
 ### 端口配置
 
-默认端口 `8765`，可在 GLMKit 设置界面中修改（范围 1024-65535）。修改后需重启智谱清言生效。
+默认端口 `16766`，可在 GLMKit 设置界面中修改（范围 1024-65535）。修改后需重启智谱清言生效。
 
 ### 保活服务
 
@@ -283,7 +283,7 @@ export ANDROID_HOME=/path/to/android-sdk
 | 认证失败 | 重启智谱清言，确保已登录账号 |
 | 流式响应中断 | 启用保活服务，防止进程被冻结 |
 | 端口冲突 | 在设置界面修改端口号（v1.0.3+ 自动尝试备用端口） |
-| 排查问题 | `curl http://127.0.0.1:8765/v1/diagnostic` 查看模块状态和捕获详情 |
+| 排查问题 | `curl http://127.0.0.1:16766/v1/diagnostic` 查看模块状态和捕获详情 |
 
 ## 📦 更新日志
 

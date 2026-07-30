@@ -32,12 +32,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   POST /shutdown             — 停止网关
  *   POST /restart              — 重启网关
  *
- * 监听 127.0.0.1:8765（默认），仅本地访问。
+ * 监听 127.0.0.1:16766（默认），仅本地访问。
  */
 public class LocalApiGateway {
 
     private static final String TAG = "GLMKit-Gateway";
-    private static final int DEFAULT_PORT = 8765;
+    private static final int DEFAULT_PORT = 16766;
     private static final int SOCKET_BACKLOG = 16;
     private static final int MAX_HEADER_BYTES = 65536;
 
@@ -62,6 +62,8 @@ public class LocalApiGateway {
     // ════════════════════════════════════════════════════════════
     public interface Backend {
         boolean isReady();
+        /** 从共享文件重载 auth */
+        void reloadAuth();
         String readinessDetail();
 
         /**
@@ -207,15 +209,17 @@ public class LocalApiGateway {
                         }
                     }
                 } catch (java.net.BindException be) {
-                    log("✗ 端口 " + listenPort + " 已被占用，网关启动失败: " + be.getMessage());
-                    // 尝试使用备用端口
-                    for (int altPort = listenPort + 1; altPort <= listenPort + 10; altPort++) {
+                    log("✗ 端口 " + listenPort + " 已被占用: " + be.getMessage());
+                    // 尝试随机端口（10000-60000范围）
+                    java.util.Random rng = new java.util.Random();
+                    for (int attempt = 0; attempt < 20; attempt++) {
+                        int altPort = 10000 + rng.nextInt(50000);
                         try {
                             serverSocket = new ServerSocket();
                             serverSocket.bind(new InetSocketAddress("127.0.0.1", altPort),
                                               SOCKET_BACKLOG);
                             listenPort = altPort;
-                            log("✓ 网关在备用端口 " + altPort + " 启动成功");
+                            log("✓ 网关在随机端口 " + altPort + " 启动成功");
                             bindLatch.countDown();
                             while (running.get() && !serverSocket.isClosed()) {
                                 try {
@@ -539,9 +543,11 @@ public class LocalApiGateway {
             JSONArray data = new JSONArray();
 
             String[] models = {
-                "glm-4", "glm-4-flash", "glm-4-flashx", "glm-4-plus", "glm-4-long",
-                "glm-4-air", "glm-4-airx", "glm-4v", "glm-4v-flash", "glm-4v-plus",
-                "glm-4-0520", "codegeex-4", "glm-4-alltools"
+                "glm-4-plus", "glm-4", "glm-4-flash", "glm-4-flashx", "glm-4-long",
+                "glm-4-air", "glm-4-airx", "glm-4-0520",
+                "glm-4v", "glm-4v-flash", "glm-4v-plus",
+                "glm-4.6", "glm-4.5", "glm-4.5-air", "glm-4.5-flash",
+                "codegeex-4", "glm-4-alltools", "glm-z1-flash"
             };
 
             for (String m : models) {
@@ -617,6 +623,12 @@ public class LocalApiGateway {
     // ════════════════════════════════════════════════════════════
     private static void handleChatCompletions(ConcurrentHashMap<String, String> headers,
                                               byte[] body, OutputStream os) throws IOException {
+        // 每次请求前先尝试从共享文件重载 auth（auth 可能刚被模块捕获）
+        if (backend != null && !backend.isReady()) {
+            try { backend.reloadAuth(); } catch (Throwable ignored) {}
+            log("chat 请求: auth 重载后 isReady=" + backend.isReady());
+        }
+
         // 检查后端就绪
         if (backend == null || !backend.isReady()) {
             String detail = (backend != null) ? backend.readinessDetail() : "后端未初始化";

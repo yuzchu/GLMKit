@@ -45,7 +45,7 @@ public final class SettingsActivity extends Activity {
     private static final String KEY_PORT = "port";
     private static final String KEY_KEEPALIVE = "keepalive";
     private static final String KEY_API_KEY = "api_key";
-    private static final int DEFAULT_PORT = 8765;
+    private static final int DEFAULT_PORT = 16766;
     private static final String TARGET_PACKAGE = "com.zhipuai.qingyan";
 
     private TextView activationStatus;
@@ -138,7 +138,7 @@ public final class SettingsActivity extends Activity {
 
         portInput = new EditText(this);
         portInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        portInput.setHint("端口号 (默认 8765)");
+        portInput.setHint("端口号 (默认 16766)");
         portInput.setText(String.valueOf(getSavedPort()));
         LinearLayout.LayoutParams portParams = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
@@ -756,9 +756,10 @@ public final class SettingsActivity extends Activity {
             if (result == null && port != configuredPort) {
                 result = httpGet("http://127.0.0.1:" + configuredPort + "/healthz", 2000);
             }
-            // 也尝试 8765-8775 范围扫描
+            // 扫描常见端口范围
             if (result == null) {
-                for (int p = 8765; p <= 8775; p++) {
+                int[] ports = {16766, 8765, 8766, 8767};
+                for (int p : ports) {
                     String r = httpGet("http://127.0.0.1:" + p + "/healthz", 500);
                     if (r != null) {
                         result = r;
@@ -796,7 +797,8 @@ public final class SettingsActivity extends Activity {
             String result = httpGet("http://127.0.0.1:" + port + "/v1/diagnostic", 4000);
             int[] foundPort = {port};
             if (result == null) {
-                for (int p = 8765; p <= 8775; p++) {
+                int[] ports = {16766, 8765, 8766, 8767, 8768, 8769, 8770};
+                for (int p : ports) {
                     if (p == port) continue;
                     String r = httpGet("http://127.0.0.1:" + p + "/v1/diagnostic", 1000);
                     if (r != null) { result = r; foundPort[0] = p; break; }
@@ -827,7 +829,8 @@ public final class SettingsActivity extends Activity {
             String result = httpGet("http://127.0.0.1:" + port + "/v1/models", 4000);
             int[] foundPort = {port};
             if (result == null) {
-                for (int p = 8765; p <= 8775; p++) {
+                int[] ports = {16766, 8765, 8766, 8767, 8768, 8769, 8770};
+                for (int p : ports) {
                     if (p == port) continue;
                     String r = httpGet("http://127.0.0.1:" + p + "/v1/models", 1000);
                     if (r != null) { result = r; foundPort[0] = p; break; }
@@ -857,6 +860,15 @@ public final class SettingsActivity extends Activity {
         new Thread(() -> {
             // 方式1: 从网关 /v1/logs 端点获取
             String result = httpGet("http://127.0.0.1:" + port + "/v1/logs", 5000);
+            // 端口扫描回退
+            if (result == null) {
+                int[] ports = {16766, 8765, 8766, 8767, 8768, 8769, 8770};
+                for (int p : ports) {
+                    if (p == port) continue;
+                    String r = httpGet("http://127.0.0.1:" + p + "/v1/logs", 2000);
+                    if (r != null) { result = r; break; }
+                }
+            }
             String displayText;
             int textColor;
 

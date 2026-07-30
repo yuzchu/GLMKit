@@ -42,6 +42,13 @@ public class GlmBackend implements LocalApiGateway.Backend {
         return capture.getBestAuth() != null;
     }
 
+    /** 从共享文件重载 auth（模块可能刚捕获到 auth） */
+    public void reloadAuth() {
+        if (!isReady()) {
+            capture.loadFromSharedFile();
+        }
+    }
+
     @Override
     public String readinessDetail() {
         StringBuilder sb = new StringBuilder();
