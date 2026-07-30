@@ -77,22 +77,97 @@ public class Main implements IXposedHookLoadPackage {
             new SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US);
     private static volatile PowerManager.WakeLock wakeLock = null;
 
+    private static final AtomicBoolean gatewayStarted = new AtomicBoolean(false);
+
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         if (!TARGET_PACKAGE.equals(lpparam.packageName)) return;
 
         INSTANCE = this;
         hostClassLoader = lpparam.classLoader;
-        log("GLMKit 模块加载，目标: " + lpparam.packageName);
+        log("★★★ GLMKit 模块已加载到进程: " + lpparam.packageName + " ★★★");
+        log("进程 PID: " + android.os.Process.myPid() + " UID: " + android.os.Process.myUid());
 
-        // 1. Hook Application.onCreate 获取 Context
+        // 1. Hook Application.attachBaseContext（最早的 Context 入口）
+        hookApplicationAttach(lpparam.classLoader);
+
+        // 2. Hook Application.onCreate（备用入口）
         hookApplicationOnCreate(lpparam.classLoader);
 
-        // 2. 尝试 hook OkHttp（标准名 → 结构扫描 → HttpURLConnection 兜底）
+        // 3. Hook Activity.onCreate（最后兜底入口）
+        hookActivityOnCreate(lpparam.classLoader);
+
+        // 4. 尝试 hook OkHttp（标准名 → 结构扫描 → HttpURLConnection 兜底）
         hookOkHttp(lpparam.classLoader);
 
-        // 3. Hook Retrofit 构建 捕获 base URL
+        // 5. Hook Retrofit 构建 捕获 base URL
         hookRetrofitBuilder(lpparam.classLoader);
+
+        log("所有 hook 安装完成");
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  Application.attachBaseContext — 最早的 Context 入口
+    // ════════════════════════════════════════════════════════════
+    private void hookApplicationAttach(ClassLoader cl) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                "android.app.Application", cl, "attachBaseContext", Context.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            if (appContext == null) {
+                                appContext = (Context) param.thisObject;
+                                log("✓ Application.attachBaseContext — 获取 Context");
+                            }
+                            tryStartGateway();
+                        } catch (Throwable t) {
+                            log("attachBaseContext hook 异常: " + t.getMessage());
+                        }
+                    }
+                });
+            log("已 hook Application.attachBaseContext");
+        } catch (Throwable t) {
+            log("hook Application.attachBaseContext 失败: " + t.getMessage());
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  Activity.onCreate — 最后兜底入口
+    // ════════════════════════════════════════════════════════════
+    private void hookActivityOnCreate(ClassLoader cl) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                "android.app.Activity", cl, "onCreate", android.os.Bundle.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            if (appContext == null) {
+                                appContext = ((android.app.Activity) param.thisObject).getApplicationContext();
+                                log("✓ Activity.onCreate — 获取 Context (兜底入口)");
+                            }
+                            tryStartGateway();
+                        } catch (Throwable t) {
+                            log("Activity.onCreate hook 异常: " + t.getMessage());
+                        }
+                    }
+                });
+            log("已 hook Activity.onCreate (兜底)");
+        } catch (Throwable t) {
+            log("hook Activity.onCreate 失败: " + t.getMessage());
+        }
+    }
+
+    /** 尝试启动网关（确保只启动一次） */
+    private void tryStartGateway() {
+        if (gatewayStarted.compareAndSet(false, true)) {
+            log(">>> 首次获取 Context，启动网关 <<<");
+            showToast("GLMKit 已注入智谱清言");
+            broadcastActivation("com.glmkit.proxy.HOOK_STARTED");
+            startGatewayWhenReady();
+        }
     }
 
     // ════════════════════════════════════════════════════════════
@@ -105,17 +180,18 @@ public class Main implements IXposedHookLoadPackage {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
-                        appContext = (Context) param.thisObject;
-                        log("宿主 Application.onCreate 完成，获取 Context");
-                        showToast("GLMKit 已注入智谱清言");
-
-                        // 通知模块自身进程：hook 已启动
-                        broadcastActivation("com.glmkit.proxy.HOOK_STARTED");
-
-                        // 延迟启动网关，等待 OkHttp 捕获
-                        startGatewayWhenReady();
+                        try {
+                            if (appContext == null) {
+                                appContext = (Context) param.thisObject;
+                                log("✓ Application.onCreate — 获取 Context");
+                            }
+                            tryStartGateway();
+                        } catch (Throwable t) {
+                            log("Application.onCreate hook 异常: " + t.getMessage());
+                        }
                     }
                 });
+            log("已 hook Application.onCreate");
         } catch (Throwable t) {
             log("hook Application.onCreate 失败: " + t.getMessage());
         }
@@ -779,30 +855,23 @@ public class Main implements IXposedHookLoadPackage {
     private void startGatewayWhenReady() {
         new Thread(() -> {
             try {
+                log(">>> startGatewayWhenReady 开始 <<<");
+
                 // 初始化日志文件
                 if (appContext != null) {
                     initLogFile(appContext);
-                }
-
-                // 短暂等待 OkHttp 捕获（最多 3s），然后立即启动网关
-                int waited = 0;
-                while (getCapture().getOkHttpClient() == null && waited < 3_000) {
-                    Thread.sleep(200);
-                    waited += 200;
-                }
-
-                if (getCapture().getOkHttpClient() != null) {
-                    log("OkHttp 客户端已捕获，启动网关");
+                    log("日志文件初始化完成: " + getLogFilePath());
                 } else {
-                    log("OkHttp 未捕获，网关以备用模式启动 (HttpURLConnection)");
-                }
-
-                if (appContext == null) {
-                    log("Context 为空，无法启动网关");
+                    log("⚠️ appContext 为空！");
                     return;
                 }
 
                 Context ctx = appContext.getApplicationContext();
+                log("获取 ApplicationContext: " + (ctx != null ? "成功" : "失败"));
+                if (ctx == null) {
+                    log("⚠️ ApplicationContext 为空！");
+                    return;
+                }
 
                 int port = 8765;
                 try {
@@ -815,10 +884,14 @@ public class Main implements IXposedHookLoadPackage {
                     LocalApiGateway.setApiKey(apiKey);
                     log("配置监听端口: " + port + " (从模块偏好读取)");
                     log("API Key 验证: " + (apiKey != null && !apiKey.isEmpty() ? "已启用" : "未启用"));
-                } catch (Throwable ignored) {}
+                } catch (Throwable t) {
+                    log("读取配置失败（使用默认值）: " + t.getMessage());
+                }
 
+                log("正在启动网关...");
                 GlmBackend backend = new GlmBackend(getCapture());
                 int actualPort = LocalApiGateway.start(ctx, backend);
+                log("LocalApiGateway.start 返回端口: " + actualPort);
 
                 if (!LocalApiGateway.isRunning()) {
                     log("✗ 网关启动失败，所有端口均被占用");
@@ -826,8 +899,7 @@ public class Main implements IXposedHookLoadPackage {
                     return;
                 }
 
-                log("本地 API 网关已启动，实际端口: " + actualPort);
-                log("日志文件路径: " + getLogFilePath());
+                log("✓✓✓ 本地 API 网关已启动，实际端口: " + actualPort + " ✓✓✓");
                 showToast("GLMKit 网关已启动，端口: " + actualPort);
 
                 // 启动前台通知保活 — 防止切换应用时进程被杀死
@@ -839,18 +911,23 @@ public class Main implements IXposedHookLoadPackage {
                 try {
                     ctx.sendBroadcast(gatewayIntent);
                     log("发送网关启动广播");
-                } catch (Throwable ignored) {}
+                } catch (Throwable t) {
+                    log("发送广播失败: " + t.getMessage());
+                }
 
                 // 添加关闭钩子，记录进程退出
                 Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                    log("⚠️ 进程即将退出（shutdown hook）");
+                    log("⚠️⚠️⚠️ 进程即将退出（shutdown hook）⚠️⚠️⚠️");
                     if (wakeLock != null && wakeLock.isHeld()) {
                         try { wakeLock.release(); } catch (Throwable ignored) {}
                     }
                 }, "glmkit-shutdown-hook"));
 
+                log(">>> 网关启动流程完成 <<<");
+
             } catch (Throwable t) {
                 log("启动网关失败: " + t.getMessage());
+                log(java.util.Arrays.toString(t.getStackTrace()));
             }
         }, "glmkit-gateway-init").start();
     }
