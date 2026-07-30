@@ -269,7 +269,7 @@ public class GlmCapture {
                 return apiUrl.substring(0, idx + 4);
             }
         }
-        return "https://open.bigmodel.cn/api/paas/v4";
+        return "https://chatglm.cn/chatglm";
     }
 
     @Override

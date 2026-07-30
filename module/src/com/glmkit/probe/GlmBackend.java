@@ -22,7 +22,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
 
     private static final String TAG = "GLM-Backend";
     private static final String DEFAULT_GLM_MODEL = "glm-4";
-    private static final String GLM_API_PATH = "/chat/completions";
+    private static final String GLM_API_PATH = "/backend-api/assistant/stream";
 
     private final GlmCapture capture;
     private volatile String lastError = null;
@@ -152,12 +152,18 @@ public class GlmBackend implements LocalApiGateway.Backend {
         }
 
         // 解析响应
+        // v1.0.63: GLM API 总是返回 SSE 格式，即使 stream=false
         try {
             LocalApiGateway.CompletionResult result;
             if (req.stream) {
                 result = parseStreamResponse(response, req, sink);
             } else {
-                result = parseNonStreamResponse(response, req);
+                // 非流式请求也用流式解析，用 no-op sink
+                result = parseStreamResponse(response, req, new LocalApiGateway.DeltaSink() {
+                    @Override public boolean onText(String delta) { return true; }
+                    @Override public boolean onReasoning(String delta) { return true; }
+                    @Override public boolean isCancelled() { return false; }
+                });
             }
             // 成功路径也确保关闭 response body
             closeResponseBodyQuietly(response);
@@ -175,92 +181,122 @@ public class GlmBackend implements LocalApiGateway.Backend {
 
     private JSONObject buildGlmRequestBody(LocalApiGateway.CompletionRequest req) throws Exception {
         JSONObject payload = new JSONObject();
-        String glmModel = mapModel(req.model);
-        payload.put("model", glmModel);
-        if (!glmModel.equals(req.model)) {
-            log("  模型映射: " + req.model + " → " + glmModel);
-        }
-        payload.put("stream", req.stream);
 
-        // 消息转换 — JSONArray 透传 (已是 OpenAI 格式)
-        payload.put("messages", req.messages);
+        // v1.0.63: GLM API 格式 — assistant_id + chat_mode，不是 model
+        // 解析 capturedModel: "assistant_id:chat_mode" 或 "assistant_id"
+        String capturedModel = capture.getCapturedModel();
+        String assistantId = "65940acff94777010aa6b796"; // 默认
+        String chatMode = "";
 
-        // 可选参数
-        if (req.temperature >= 0) {
-            payload.put("temperature", req.temperature);
-        }
-        if (req.maxTokens > 0) {
-            payload.put("max_tokens", req.maxTokens);
-        }
-        if (req.topP >= 0) {
-            payload.put("top_p", req.topP);
-        }
-        if (req.stop != null && req.stop.length > 0) {
-            JSONArray stopArr = new JSONArray();
-            for (String s : req.stop) stopArr.put(s);
-            payload.put("stop", stopArr);
+        if (capturedModel != null && !capturedModel.isEmpty()) {
+            int colonIdx = capturedModel.indexOf(':');
+            if (colonIdx > 0) {
+                assistantId = capturedModel.substring(0, colonIdx);
+                chatMode = capturedModel.substring(colonIdx + 1);
+            } else {
+                assistantId = capturedModel;
+            }
         }
 
-        // GLM 特有: 启用思考链 (通过 model 名判断，大小写不敏感)
+        // 根据请求模型推断 chat_mode
         if (req.model != null) {
             String modelLower = req.model.toLowerCase();
-            if (modelLower.contains("thinking")
-                    || modelLower.contains("reasoner")
-                    || modelLower.startsWith("o1")) {
-                payload.put("thinking", new JSONObject().put("type", "enabled"));
+            if (modelLower.contains("thinking") || modelLower.contains("reasoner")
+                    || modelLower.contains("zero") || modelLower.contains("o1")) {
+                if (chatMode.isEmpty()) chatMode = "thinking";
+            }
+            if (modelLower.contains("deep") && modelLower.contains("research")) {
+                chatMode = "deep_research";
             }
         }
 
-        // 请求 ID
-        payload.put("request_id", "glmkit-" + System.currentTimeMillis());
+        payload.put("assistant_id", assistantId);
+        payload.put("conversation_id", "");
+        payload.put("project_id", "");
+        payload.put("chat_type", "user_chat");
 
-        // 透传 GLM 兼容的额外参数
-        if (req.rawRequest != null) {
-            // tools / tool_choice (函数调用)
-            JSONArray tools = req.rawRequest.optJSONArray("tools");
-            if (tools != null) payload.put("tools", tools);
-            // tool_choice 可能是 String("auto"/"none") 或 JSONObject
-            if (req.rawRequest.has("tool_choice")) {
-                Object tc = req.rawRequest.get("tool_choice");
-                payload.put("tool_choice", tc);
-            }
-            // response_format (JSON 模式)
-            JSONObject respFormat = req.rawRequest.optJSONObject("response_format");
-            if (respFormat != null) payload.put("response_format", respFormat);
-            // seed (可复现输出)
-            if (req.rawRequest.has("seed")) payload.put("seed", req.rawRequest.get("seed"));
-            // user (用户标识)
-            String user = req.rawRequest.optString("user", null);
-            if (user != null) payload.put("user", user);
-            // frequency_penalty / presence_penalty
-            if (req.rawRequest.has("frequency_penalty")) {
-                payload.put("frequency_penalty", req.rawRequest.get("frequency_penalty"));
-            }
-            if (req.rawRequest.has("presence_penalty")) {
-                payload.put("presence_penalty", req.rawRequest.get("presence_penalty"));
-            }
-            // logit_bias (token 偏置)
-            if (req.rawRequest.has("logit_bias")) {
-                payload.put("logit_bias", req.rawRequest.get("logit_bias"));
-            }
-            // n (生成数量)
-            if (req.rawRequest.has("n")) {
-                payload.put("n", req.rawRequest.get("n"));
-            }
-            // stream_options (流式 usage 统计)
-            if (req.rawRequest.has("stream_options")) {
-                payload.put("stream_options", req.rawRequest.get("stream_options"));
-            }
-            // logprobs / top_logprobs (对数概率)
-            if (req.rawRequest.has("logprobs")) {
-                payload.put("logprobs", req.rawRequest.get("logprobs"));
-            }
-            if (req.rawRequest.has("top_logprobs")) {
-                payload.put("top_logprobs", req.rawRequest.get("top_logprobs"));
-            }
-        }
+        // 消息转换 — 将 OpenAI messages 转为 GLM 格式
+        // GLM 格式: [{"role": "user", "content": [{"type": "text", "text": "..."}]}]
+        // 参考项目将所有消息合并为一个 prompt
+        JSONArray glmMessages = convertMessagesToGlm(req.messages);
+        payload.put("messages", glmMessages);
+
+        // meta_data
+        JSONObject metaData = new JSONObject();
+        metaData.put("channel", "");
+        metaData.put("chat_mode", chatMode);
+        metaData.put("draft_id", "");
+        metaData.put("if_plus_model", true);
+        metaData.put("input_question_type", "xxxx");
+        metaData.put("is_networking", false);
+        metaData.put("is_test", false);
+        metaData.put("platform", "pc");
+        metaData.put("quote_log_id", "");
+        JSONObject cogview = new JSONObject();
+        cogview.put("rm_label_watermark", false);
+        metaData.put("cogview", cogview);
+        payload.put("meta_data", metaData);
+
+        log("  GLM 请求体: assistant_id=" + assistantId + " chat_mode=" + chatMode
+            + " msgs=" + glmMessages.length());
 
         return payload;
+    }
+
+    /** v1.0.63: 将 OpenAI messages 转为 GLM 格式 */
+    private JSONArray convertMessagesToGlm(JSONArray openaiMessages) throws Exception {
+        // 参考项目方案: 将所有消息合并为一个 prompt，用角色前缀
+        StringBuilder prompt = new StringBuilder();
+        for (int i = 0; i < openaiMessages.length(); i++) {
+            JSONObject msg = openaiMessages.getJSONObject(i);
+            String role = msg.optString("role", "user");
+            String content = msg.optString("content", "");
+
+            // 处理 content 可能是数组的情况
+            if (content.isEmpty() || content.equals("null")) {
+                Object contentObj = msg.opt("content");
+                if (contentObj instanceof JSONArray) {
+                    JSONArray arr = (JSONArray) contentObj;
+                    for (int j = 0; j < arr.length(); j++) {
+                        JSONObject part = arr.optJSONObject(j);
+                        if (part != null) {
+                            String text = part.optString("text", "");
+                            if (!text.isEmpty()) content += text;
+                        }
+                    }
+                }
+            }
+
+            if (content.isEmpty()) continue;
+
+            // 角色前缀
+            String title;
+            switch (role) {
+                case "system": title = "System"; break;
+                case "assistant": title = "Assistant"; break;
+                case "user": title = "User"; break;
+                case "tool": title = "User"; break;
+                default: title = "User"; break;
+            }
+
+            if (prompt.length() > 0) prompt.append("\n\n");
+            prompt.append(title).append(": ").append(content);
+        }
+        prompt.append("\n\nAssistant: ");
+
+        // GLM 格式: 单个 user 消息
+        JSONArray glmMessages = new JSONArray();
+        JSONObject userMsg = new JSONObject();
+        userMsg.put("role", "user");
+        JSONArray contentArr = new JSONArray();
+        JSONObject textContent = new JSONObject();
+        textContent.put("type", "text");
+        textContent.put("text", prompt.toString());
+        contentArr.put(textContent);
+        userMsg.put("content", contentArr);
+        glmMessages.put(userMsg);
+
+        return glmMessages;
     }
 
     private String mapModel(String openaiModel) {
@@ -388,7 +424,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
         String base = capture.getBestBaseUrl();
         if (base == null) {
             // v1.0.50: 兜底 — 使用已知 GLM API URL
-            base = "https://open.bigmodel.cn/api/paas/v4";
+            base = "https://chatglm.cn/chatglm";
             log("URL 未捕获，使用默认 GLM API URL: " + base);
         }
         // 去除尾部斜杠
@@ -396,7 +432,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
             base = base.substring(0, base.length() - 1);
         }
         // 如果 base 已包含完整路径，直接使用
-        if (base.contains("/chat/completions")) {
+        if (base.contains("/backend-api/assistant/stream")) {
             return base;
         }
         // 拼接标准路径
@@ -604,30 +640,60 @@ public class GlmBackend implements LocalApiGateway.Backend {
         conn.setDoOutput(true);
         conn.setConnectTimeout(30_000);
         conn.setReadTimeout(120_000);
-        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-        if (stream) {
-            conn.setRequestProperty("Accept", "text/event-stream");
-        }
 
-        // 添加认证头
+        // v1.0.63: GLM API 需要签名 + 浏览器头
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setRequestProperty("Accept", "text/event-stream");
+        conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+        conn.setRequestProperty("App-Name", "chatglm");
+        conn.setRequestProperty("Cache-Control", "no-cache");
+        conn.setRequestProperty("Origin", "https://chatglm.cn");
+        conn.setRequestProperty("Pragma", "no-cache");
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0");
+        conn.setRequestProperty("X-App-Fr", "browser_extension");
+        conn.setRequestProperty("X-App-Platform", "pc");
+        conn.setRequestProperty("X-App-Version", "0.0.1");
+        conn.setRequestProperty("X-Lang", "zh");
+
+        // 认证头
         String token = capture.getAuthToken();
         if (token != null) {
             if (!token.startsWith("Bearer ")) token = "Bearer " + token;
             conn.setRequestProperty("Authorization", token);
         }
         String apiKey = capture.getApiKey();
-        if (apiKey != null) {
-            conn.setRequestProperty("x-api-key", apiKey);
-            if (token == null) {
-                conn.setRequestProperty("Authorization",
-                    apiKey.startsWith("Bearer ") ? apiKey : "Bearer " + apiKey);
-            }
+        if (apiKey != null && token == null) {
+            conn.setRequestProperty("Authorization",
+                apiKey.startsWith("Bearer ") ? apiKey : "Bearer " + apiKey);
         }
         String cookie = capture.getCookie();
         if (cookie != null) {
             conn.setRequestProperty("Cookie", cookie);
         }
-        conn.setRequestProperty("User-Agent", "okhttp/4.12.0");
+
+        // 签名
+        String SIGN_SECRET = "8a1317a7468aa3ad86e997d08f3f31cb";
+        long nowMs = System.currentTimeMillis();
+        String nowStr = String.valueOf(nowMs);
+        int[] digits = new int[nowStr.length()];
+        int digitSum = 0;
+        for (int i = 0; i < nowStr.length(); i++) {
+            digits[i] = nowStr.charAt(i) - '0';
+            digitSum += digits[i];
+        }
+        int checksum = (digitSum - digits[nowStr.length() - 2]) % 10;
+        if (checksum < 0) checksum += 10;
+        String timestamp = nowStr.substring(0, nowStr.length() - 2) + checksum + nowStr.charAt(nowStr.length() - 1);
+        String nonce = java.util.UUID.randomUUID().toString().replace("-", "");
+        String signStr = md5Hex(timestamp + "-" + nonce + "-" + SIGN_SECRET);
+
+        conn.setRequestProperty("X-Sign", signStr);
+        conn.setRequestProperty("X-Timestamp", timestamp);
+        conn.setRequestProperty("X-Nonce", nonce);
+        conn.setRequestProperty("X-Request-Id", java.util.UUID.randomUUID().toString().replace("-", ""));
+
+        String deviceId = capture.getDeviceId();
+        conn.setRequestProperty("X-Device-Id", deviceId != null ? deviceId : java.util.UUID.randomUUID().toString().replace("-", ""));
 
         // 写入请求体
         java.io.OutputStream os = conn.getOutputStream();
@@ -681,7 +747,9 @@ public class GlmBackend implements LocalApiGateway.Backend {
     }
 
     private void addAuthHeaders(Object builder, Method headerMethod) throws Exception {
-        // 优先使用 Authorization token
+        // v1.0.63: GLM API 需要签名 + 浏览器头
+
+        // Authorization token
         String token = capture.getAuthToken();
         if (token != null) {
             if (!token.startsWith("Bearer ")) {
@@ -690,14 +758,11 @@ public class GlmBackend implements LocalApiGateway.Backend {
             headerMethod.invoke(builder, "Authorization", token);
         }
 
-        // API Key
+        // API Key (fallback)
         String apiKey = capture.getApiKey();
-        if (apiKey != null) {
-            headerMethod.invoke(builder, "x-api-key", apiKey);
-            if (token == null) {
-                headerMethod.invoke(builder, "Authorization",
-                    apiKey.startsWith("Bearer ") ? apiKey : "Bearer " + apiKey);
-            }
+        if (apiKey != null && token == null) {
+            headerMethod.invoke(builder, "Authorization",
+                apiKey.startsWith("Bearer ") ? apiKey : "Bearer " + apiKey);
         }
 
         // Cookie
@@ -706,14 +771,72 @@ public class GlmBackend implements LocalApiGateway.Backend {
             headerMethod.invoke(builder, "Cookie", cookie);
         }
 
+        // 签名生成 (参考 glm2api/services/glm_auth.py build_sign)
+        String SIGN_SECRET = "8a1317a7468aa3ad86e997d08f3f31cb";
+        long nowMs = System.currentTimeMillis();
+        String nowStr = String.valueOf(nowMs);
+        int[] digits = new int[nowStr.length()];
+        int digitSum = 0;
+        for (int i = 0; i < nowStr.length(); i++) {
+            digits[i] = nowStr.charAt(i) - '0';
+            digitSum += digits[i];
+        }
+        int checksum = (digitSum - digits[nowStr.length() - 2]) % 10;
+        if (checksum < 0) checksum += 10;
+        String timestamp = nowStr.substring(0, nowStr.length() - 2) + checksum + nowStr.charAt(nowStr.length() - 1);
+        String nonce = java.util.UUID.randomUUID().toString().replace("-", "");
+        String signStr = md5Hex(timestamp + "-" + nonce + "-" + SIGN_SECRET);
+
+        // 签名头
+        headerMethod.invoke(builder, "X-Sign", signStr);
+        headerMethod.invoke(builder, "X-Timestamp", timestamp);
+        headerMethod.invoke(builder, "X-Nonce", nonce);
+        headerMethod.invoke(builder, "X-Request-Id", java.util.UUID.randomUUID().toString().replace("-", ""));
+
         // 设备 ID
         String deviceId = capture.getDeviceId();
         if (deviceId != null) {
-            headerMethod.invoke(builder, "x-device-id", deviceId);
+            headerMethod.invoke(builder, "X-Device-Id", deviceId);
+        } else {
+            headerMethod.invoke(builder, "X-Device-Id", java.util.UUID.randomUUID().toString().replace("-", ""));
         }
 
-        // User-Agent
-        headerMethod.invoke(builder, "User-Agent", "okhttp/4.12.0");
+        // 浏览器头 (参考 glm2api get_browser_headers)
+        headerMethod.invoke(builder, "Accept", "text/event-stream");
+        headerMethod.invoke(builder, "Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6");
+        headerMethod.invoke(builder, "App-Name", "chatglm");
+        headerMethod.invoke(builder, "Cache-Control", "no-cache");
+        headerMethod.invoke(builder, "Content-Type", "application/json");
+        headerMethod.invoke(builder, "Origin", "https://chatglm.cn");
+        headerMethod.invoke(builder, "Pragma", "no-cache");
+        headerMethod.invoke(builder, "Sec-Ch-Ua", "\"Microsoft Edge\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"");
+        headerMethod.invoke(builder, "Sec-Ch-Ua-Mobile", "?0");
+        headerMethod.invoke(builder, "Sec-Ch-Ua-Platform", "\"Windows\"");
+        headerMethod.invoke(builder, "Sec-Fetch-Dest", "empty");
+        headerMethod.invoke(builder, "Sec-Fetch-Mode", "cors");
+        headerMethod.invoke(builder, "Sec-Fetch-Site", "same-origin");
+        headerMethod.invoke(builder, "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0");
+        headerMethod.invoke(builder, "X-App-Fr", "browser_extension");
+        headerMethod.invoke(builder, "X-App-Platform", "pc");
+        headerMethod.invoke(builder, "X-App-Version", "0.0.1");
+        headerMethod.invoke(builder, "X-Device-Brand", "");
+        headerMethod.invoke(builder, "X-Device-Model", "");
+        headerMethod.invoke(builder, "X-Lang", "zh");
+    }
+
+    /** MD5 哈希 */
+    private String md5Hex(String input) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("MD5");
+            byte[] digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : digest) {
+                sb.append(String.format("%02x", b & 0xff));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     // ════════════════════════════════════════════════════════════
@@ -782,6 +905,15 @@ public class GlmBackend implements LocalApiGateway.Backend {
         String finishReason = "stop";
         int promptTokens = 0, completionTokens = 0;
 
+        // v1.0.63: GLM SSE 格式 — parts + content 数组
+        // data: {"parts": [{"logic_id": "...", "content": [{"type": "text", "text": "..."}, {"type": "think", "think": "..."}]}], "status": "..."}
+        // 需要增量提取 text/think 内容
+        java.util.Map<String, String> partTexts = new java.util.HashMap<>();
+        java.util.Map<String, String> partReasonings = new java.util.HashMap<>();
+        java.util.List<String> orderedLogicIds = new java.util.ArrayList<>();
+        java.util.Map<String, Integer> textSentLen = new java.util.HashMap<>();
+        java.util.Map<String, Integer> reasoningSentLen = new java.util.HashMap<>();
+
         String line;
         while ((line = reader.readLine()) != null) {
             if (sink.isCancelled()) {
@@ -796,49 +928,93 @@ public class GlmBackend implements LocalApiGateway.Backend {
             if ("[DONE]".equals(data)) break;
 
             try {
-                JSONObject chunk = new JSONObject(data);
-                JSONArray choices = chunk.optJSONArray("choices");
-                if (choices == null || choices.length() == 0) continue;
+                JSONObject event = new JSONObject(data);
 
-                JSONObject choice = choices.getJSONObject(0);
-                JSONObject delta = choice.optJSONObject("delta");
-                if (delta == null) continue;
+                // GLM 格式: parts 数组
+                JSONArray parts = event.optJSONArray("parts");
+                if (parts != null) {
+                    for (int i = 0; i < parts.length(); i++) {
+                        JSONObject part = parts.optJSONObject(i);
+                        if (part == null) continue;
 
-                // 内容增量
-                String contentDelta = delta.optString("content", null);
-                if (contentDelta != null && !contentDelta.isEmpty() && !"null".equals(contentDelta)) {
-                    fullContent.append(contentDelta);
-                    sink.onText(contentDelta);
+                        String logicId = part.optString("logic_id", "");
+                        if (logicId.isEmpty()) continue;
+
+                        if (!orderedLogicIds.contains(logicId)) {
+                            orderedLogicIds.add(logicId);
+                        }
+
+                        JSONArray contentItems = part.optJSONArray("content");
+                        if (contentItems == null) continue;
+
+                        StringBuilder partText = new StringBuilder();
+                        StringBuilder partReasoning = new StringBuilder();
+
+                        for (int j = 0; j < contentItems.length(); j++) {
+                            JSONObject content = contentItems.optJSONObject(j);
+                            if (content == null) continue;
+
+                            String type = content.optString("type", "");
+                            if ("text".equals(type)) {
+                                partText.append(content.optString("text", ""));
+                            } else if ("think".equals(type)) {
+                                partReasoning.append(content.optString("think", ""));
+                            } else if ("code".equals(type)) {
+                                partText.append("```python\n")
+                                    .append(content.optString("code", ""))
+                                    .append("\n```");
+                            } else if ("execution_output".equals(type)) {
+                                partText.append(content.optString("content", ""));
+                            }
+                        }
+
+                        String renderedText = partText.toString().trim();
+                        String renderedReasoning = partReasoning.toString().trim();
+
+                        if (!renderedText.isEmpty()) {
+                            partTexts.put(logicId, renderedText);
+                        }
+                        if (!renderedReasoning.isEmpty()) {
+                            partReasonings.put(logicId, renderedReasoning);
+                        }
+                    }
                 }
 
-                // 思考链增量 (GLM 特有)
-                String reasoningDelta = delta.optString("reasoning_content", null);
-                if (reasoningDelta != null && !reasoningDelta.isEmpty() && !"null".equals(reasoningDelta)) {
-                    fullReasoning.append(reasoningDelta);
-                    sink.onReasoning(reasoningDelta);
+                // 计算增量并发送
+                for (String logicId : orderedLogicIds) {
+                    // 文本增量
+                    String fullText = partTexts.getOrDefault(logicId, "");
+                    int prevLen = textSentLen.getOrDefault(logicId, 0);
+                    if (fullText.length() > prevLen) {
+                        String delta = fullText.substring(prevLen);
+                        fullContent.append(delta);
+                        sink.onText(delta);
+                        textSentLen.put(logicId, fullText.length());
+                    }
+
+                    // 思考链增量
+                    String fullReasoningStr = partReasonings.getOrDefault(logicId, "");
+                    int prevReasoningLen = reasoningSentLen.getOrDefault(logicId, 0);
+                    if (fullReasoningStr.length() > prevReasoningLen) {
+                        String delta = fullReasoningStr.substring(prevReasoningLen);
+                        fullReasoning.append(delta);
+                        sink.onReasoning(delta);
+                        reasoningSentLen.put(logicId, fullReasoningStr.length());
+                    }
                 }
 
-                // 函数调用增量
-                JSONArray toolCallsDelta = delta.optJSONArray("tool_calls");
-                if (toolCallsDelta != null && toolCallsDelta.length() > 0) {
-                    sink.onToolCalls(toolCallsDelta.toString());
-                }
-
-                // finish_reason
-                String fr = choice.optString("finish_reason", null);
-                if (fr != null && !fr.isEmpty() && !fr.equals("null")) {
-                    finishReason = fr;
-                }
-
-                // usage (可能在最后一个 chunk)
-                JSONObject usage = chunk.optJSONObject("usage");
-                if (usage != null) {
-                    promptTokens = usage.optInt("prompt_tokens", promptTokens);
-                    completionTokens = usage.optInt("completion_tokens", completionTokens);
+                // status 判断
+                String status = event.optString("status", "");
+                if ("finish".equals(status) || "intervene".equals(status)
+                        || "stop".equals(status)) {
+                    if ("intervene".equals(status)) {
+                        finishReason = "content_filter";
+                    }
+                    // 不立即 break，可能还有数据
                 }
 
             } catch (Exception e) {
-                log("解析 SSE chunk 异常: " + e.getMessage() + " line=" + truncate(data, 200));
+                log("解析 GLM SSE 异常: " + e.getMessage() + " line=" + truncate(data, 200));
             }
         }
 
