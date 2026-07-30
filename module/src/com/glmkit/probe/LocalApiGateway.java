@@ -604,9 +604,10 @@ public class LocalApiGateway {
         JSONObject resp = new JSONObject();
         try {
             resp.put("module", "GLMKit");
-            resp.put("log_file", "/sdcard/glmkit_debug.log");
-            // 简单日志缓冲区 — 不依赖 Main 类（可能在非 Xposed 进程中无法加载）
-            resp.put("logs", "");
+            resp.put("log_file", LOG_FILE_PATH);
+            resp.put("logs", getLogBufferText());
+            resp.put("running", isRunning());
+            resp.put("port", listenPort);
         } catch (Exception ignored) {}
         sendResponse(os, 200, "OK", "application/json", resp.toString());
     }
@@ -1004,7 +1005,39 @@ public class LocalApiGateway {
         return "unknown";
     }
 
+    private static final java.util.List<String> logBuffer =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<String>(200));
+    private static final String LOG_FILE_PATH = "/sdcard/glmkit_debug.log";
+
     private static void log(String msg) {
-        Log.d(TAG, msg);
+        String ts = new java.text.SimpleDateFormat("HH:mm:ss.SSS",
+                java.util.Locale.US).format(new java.util.Date());
+        String line = "[" + ts + "] " + msg;
+        Log.d(TAG, line);
+        // 添加到内存缓冲区（保留最近 200 条）
+        synchronized (logBuffer) {
+            logBuffer.add(line);
+            while (logBuffer.size() > 200) {
+                logBuffer.remove(0);
+            }
+        }
+        // 写入文件（best-effort，失败不影响运行）
+        try {
+            java.io.FileWriter fw = new java.io.FileWriter(LOG_FILE_PATH, true);
+            fw.write(line + "\n");
+            fw.flush();
+            fw.close();
+        } catch (Throwable ignored) {}
+    }
+
+    static String getLogBufferText() {
+        synchronized (logBuffer) {
+            if (logBuffer.isEmpty()) return "";
+            StringBuilder sb = new StringBuilder();
+            for (String l : logBuffer) {
+                sb.append(l).append('\n');
+            }
+            return sb.toString();
+        }
     }
 }

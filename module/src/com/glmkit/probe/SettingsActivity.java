@@ -565,26 +565,33 @@ public final class SettingsActivity extends Activity {
     private void startGateway() {
         Toast.makeText(this, "正在启动网关...", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
+            StringBuilder report = new StringBuilder();
             try {
                 int port = getSavedPort();
                 String apiKey = getPrefs().getString(KEY_API_KEY, null);
+                report.append("配置端口: ").append(port).append('\n');
 
                 LocalApiGateway.setListenPort(port);
                 LocalApiGateway.setApiKey(apiKey);
 
                 if (!LocalApiGateway.isRunning()) {
+                    report.append("网关未运行，正在启动...\n");
                     GlmCapture capture = new GlmCapture();
-                    capture.loadFromSharedFile();
+                    boolean loaded = capture.loadFromSharedFile();
+                    report.append("auth加载: ").append(loaded ? "成功" : "无auth").append('\n');
                     GlmBackend backend = new GlmBackend(capture);
                     port = LocalApiGateway.start(this, backend);
-                    android.util.Log.i("GLMKit", "网关启动返回端口: " + port);
+                    report.append("start()返回端口: ").append(port).append('\n');
+                    report.append("isRunning(): ").append(LocalApiGateway.isRunning()).append('\n');
                 } else {
-                    android.util.Log.i("GLMKit", "网关已在运行");
+                    report.append("网关已在运行\n");
                 }
 
                 final int finalPort = port;
-                Thread.sleep(1000);
+                try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
                 String result = httpGet("http://127.0.0.1:" + finalPort + "/healthz", 2000);
+                report.append("healthz: ").append(result != null ? "OK" : "FAIL").append('\n');
+
                 runOnUiThread(() -> {
                     if (result != null) {
                         Toast.makeText(this, "✅ 网关已启动 (端口 " + finalPort + ")",
@@ -592,9 +599,13 @@ public final class SettingsActivity extends Activity {
                         keepAliveSwitch.setChecked(true);
                         saveKeepAlive(true);
                     } else {
-                        Toast.makeText(this, "⚠️ 网关启动失败\n"
-                                + "端口: " + finalPort + "\n"
-                                + "请检查端口是否被占用",
+                        // 显示详细诊断信息
+                        String logs = LocalApiGateway.getLogBufferText();
+                        String diag = "⚠️ 网关启动失败\n" + report + "\n日志:\n" + logs;
+                        diagResultText.setText(diag);
+                        diagResultText.setTextColor(0xFFF44336);
+                        diagResultText.setVisibility(View.VISIBLE);
+                        Toast.makeText(this, "⚠️ 启动失败，请查看下方详情",
                                 Toast.LENGTH_LONG).show();
                     }
                     refreshStatus();
@@ -605,8 +616,12 @@ public final class SettingsActivity extends Activity {
 
             } catch (Throwable t) {
                 android.util.Log.e("GLMKit", "启动网关异常", t);
+                final String msg = t.getClass().getSimpleName() + ": " + t.getMessage();
                 runOnUiThread(() -> {
-                    Toast.makeText(this, "⚠️ 启动异常: " + t.getMessage(),
+                    diagResultText.setText("⚠️ 启动异常\n" + report + "\n异常: " + msg);
+                    diagResultText.setTextColor(0xFFF44336);
+                    diagResultText.setVisibility(View.VISIBLE);
+                    Toast.makeText(this, "⚠️ 启动异常: " + msg,
                             Toast.LENGTH_LONG).show();
                     refreshStatus();
                 });
