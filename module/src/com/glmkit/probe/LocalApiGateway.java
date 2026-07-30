@@ -231,7 +231,11 @@ public class LocalApiGateway {
                     log("网关启动失败: " + t.getMessage());
                 } finally {
                     bindLatch.countDown();
-                    running.set(false);
+                    // 只当当前线程仍是 acceptThread 时才设 running=false
+                    // 避免 restart 场景下旧线程覆盖新线程的 running=true
+                    if (acceptThread == Thread.currentThread()) {
+                        running.set(false);
+                    }
                     log("网关线程退出");
                 }
             }, "glmkit-accept");
@@ -432,6 +436,22 @@ public class LocalApiGateway {
 
         if ("POST".equals(method) && "/restart".equals(path)) {
             log("收到 /restart 请求，正在重启网关...");
+            // 重新从 XSharedPreferences 读取配置（API Key 等）
+            try {
+                de.robv.android.xposed.XSharedPreferences xPrefs =
+                    new de.robv.android.xposed.XSharedPreferences("com.glmkit.proxy", "glmkit_settings");
+                xPrefs.reload();
+                xPrefs.makeReadable();
+                String newKey = xPrefs.getString("api_key", null);
+                setApiKey(newKey);
+                int newPort = xPrefs.getInt("port", listenPort);
+                if (newPort >= 1024 && newPort <= 65535) {
+                    listenPort = newPort;
+                }
+                log("重启时重新加载配置: port=" + listenPort + ", apiKey=" + (newKey != null && !newKey.isEmpty() ? "已设置" : "未设置"));
+            } catch (Throwable t) {
+                log("重启时读取配置失败: " + t.getMessage());
+            }
             stop();
             try { Thread.sleep(200); } catch (InterruptedException ignored) {}
             int restartPort = start(context, backend);

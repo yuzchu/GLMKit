@@ -7,6 +7,7 @@ import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.lang.reflect.Method;
+import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
 
 import de.robv.android.xposed.XposedBridge;
@@ -36,15 +37,15 @@ public class GlmBackend implements LocalApiGateway.Backend {
 
     @Override
     public boolean isReady() {
-        return capture.getOkHttpClient() != null
-            && capture.getBestBaseUrl() != null
-            && capture.getBestAuth() != null;
+        // 放宽条件：不需要 OkHttp client，只要有 auth 就行
+        // 网关可以用 HttpURLConnection 发请求
+        return capture.getBestAuth() != null;
     }
 
     @Override
     public String readinessDetail() {
         StringBuilder sb = new StringBuilder();
-        sb.append("client=").append(capture.getOkHttpClient() != null ? "yes" : "no");
+        sb.append("client=").append(capture.getOkHttpClient() != null ? "yes" : "no(fallback)");
         sb.append(", baseUrl=").append(capture.getBestBaseUrl() != null ? "yes" : "no");
         sb.append(", auth=").append(capture.getBestAuth() != null ? "yes" : "no");
         if (lastError != null) {
@@ -371,11 +372,21 @@ public class GlmBackend implements LocalApiGateway.Backend {
     private Object executeOkHttpRequest(String url, String body, boolean stream) throws Exception {
         Object client = capture.getOkHttpClient();
         if (client == null) {
-            throw new LocalApiGateway.GatewayException(503, "no_client",
-                "OkHttp 客户端未捕获");
+            // 兜底：使用 HttpURLConnection
+            return executeWithHttpURLConnection(url, body, stream);
         }
 
-        ClassLoader cl = client.getClass().getClassLoader();
+        // 检查是否是标准 OkHttp 类（非混淆）
+        String clientClassName = client.getClass().getName();
+        if (!clientClassName.equals("okhttp3.OkHttpClient")
+                && !clientClassName.equals("com.squareup.okhttp.OkHttpClient")) {
+            // 混淆类 — 无法通过标准类名反射构建请求，直接用 HttpURLConnection
+            log("OkHttp 客户端为混淆类 (" + clientClassName + ")，使用 HttpURLConnection");
+            return executeWithHttpURLConnection(url, body, stream);
+        }
+
+        try {
+            ClassLoader cl = client.getClass().getClassLoader();
 
         // 加载 OkHttp 类
         Class<?> builderClass = cl.loadClass("okhttp3.Request$Builder");
@@ -413,11 +424,100 @@ public class GlmBackend implements LocalApiGateway.Backend {
         Object request = buildMethod.invoke(requestBuilder);
 
         // 执行请求
-        Method newCallMethod = client.getClass().getMethod("newCall", requestClass);
-        Object call = newCallMethod.invoke(client, request);
+            Method newCallMethod = client.getClass().getMethod("newCall", requestClass);
+            Object call = newCallMethod.invoke(client, request);
 
-        Method executeMethod = call.getClass().getMethod("execute");
-        return executeMethod.invoke(call);
+            Method executeMethod = call.getClass().getMethod("execute");
+            return executeMethod.invoke(call);
+        } catch (Throwable t) {
+            // OkHttp 反射失败，兜底用 HttpURLConnection
+            log("OkHttp 反射调用失败，回退到 HttpURLConnection: " + t.getMessage());
+            return executeWithHttpURLConnection(url, body, stream);
+        }
+    }
+
+    /** HttpURLConnection 兜底请求方法 */
+    private Object executeWithHttpURLConnection(String url, String body, boolean stream) throws Exception {
+        java.net.URL urlObj = new java.net.URL(url);
+        HttpURLConnection conn = (HttpURLConnection) urlObj.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setDoOutput(true);
+        conn.setConnectTimeout(30_000);
+        conn.setReadTimeout(120_000);
+        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        if (stream) {
+            conn.setRequestProperty("Accept", "text/event-stream");
+        }
+
+        // 添加认证头
+        String token = capture.getAuthToken();
+        if (token != null) {
+            if (!token.startsWith("Bearer ")) token = "Bearer " + token;
+            conn.setRequestProperty("Authorization", token);
+        }
+        String apiKey = capture.getApiKey();
+        if (apiKey != null) {
+            conn.setRequestProperty("x-api-key", apiKey);
+            if (token == null) {
+                conn.setRequestProperty("Authorization",
+                    apiKey.startsWith("Bearer ") ? apiKey : "Bearer " + apiKey);
+            }
+        }
+        String cookie = capture.getCookie();
+        if (cookie != null) {
+            conn.setRequestProperty("Cookie", cookie);
+        }
+        conn.setRequestProperty("User-Agent", "okhttp/4.12.0");
+
+        // 写入请求体
+        java.io.OutputStream os = conn.getOutputStream();
+        os.write(body.getBytes("UTF-8"));
+        os.flush();
+        os.close();
+
+        int code = conn.getResponseCode();
+        java.io.InputStream is = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
+        return new ResponseWrapper(code, is, conn);
+    }
+
+    /** 响应包装类 — 兼容 OkHttp Response 反射调用 */
+    public static class ResponseWrapper {
+        private final int code;
+        private final ResponseBodyWrapper body;
+
+        public ResponseWrapper(int code, java.io.InputStream is, HttpURLConnection conn) {
+            this.code = code;
+            this.body = new ResponseBodyWrapper(is, conn);
+        }
+
+        public int code() { return code; }
+        public ResponseBodyWrapper body() { return body; }
+    }
+
+    public static class ResponseBodyWrapper {
+        private final java.io.InputStream is;
+        private final HttpURLConnection conn;
+
+        public ResponseBodyWrapper(java.io.InputStream is, HttpURLConnection conn) {
+            this.is = is;
+            this.conn = conn;
+        }
+
+        public String string() throws Exception {
+            if (is == null) return null;
+            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = is.read(buf)) != -1) baos.write(buf, 0, n);
+            return new String(baos.toByteArray(), "UTF-8");
+        }
+
+        public java.io.InputStream byteStream() { return is; }
+
+        public void close() {
+            try { if (is != null) is.close(); } catch (Throwable ignored) {}
+            try { if (conn != null) conn.disconnect(); } catch (Throwable ignored) {}
+        }
     }
 
     private void addAuthHeaders(Object builder, Method headerMethod) throws Exception {

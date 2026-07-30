@@ -2,8 +2,16 @@ package com.glmkit.probe;
 
 import android.content.Context;
 import android.content.Intent;
+import android.os.Handler;
+import android.os.Looper;
+import android.widget.Toast;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.net.HttpURLConnection;
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
@@ -20,7 +28,12 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * 功能：Hook OkHttp 网络层，捕获 GLM 认证信息和 API 端点，
  *       在本地启动 OpenAI 兼容的 API 反代网关。
  *
- * 包名 com.glmkit.proxy（与参考项目 com.dsmod.probe 不同）
+ * 核心方案（参考 Deekseep）：
+ *   1. 先尝试标准 OkHttp 类名 hook
+ *   2. 若失败，用 listDexClasses() 枚举所有 dex 类，
+ *      按结构签名找到混淆后的 OkHttp Request/Client/Call 类
+ *   3. Hook 找到的混淆类捕获认证和请求
+ *   4. HttpURLConnection 兜底
  */
 public class Main implements IXposedHookLoadPackage {
 
@@ -32,8 +45,13 @@ public class Main implements IXposedHookLoadPackage {
 
     // 捕获的 GLM 网络信息
     private volatile GlmCapture capture;
-    private volatile Context appContext;
+    private static volatile Context appContext;
     private final AtomicBoolean realCallHooked = new AtomicBoolean(false);
+
+    // 混淆 OkHttp 类缓存（结构扫描结果）
+    private volatile Class<?> obfClientClass;
+    private volatile Class<?> obfRequestClass;
+    private volatile Class<?> obfHeadersClass;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
@@ -46,8 +64,8 @@ public class Main implements IXposedHookLoadPackage {
         // 1. Hook Application.onCreate 获取 Context
         hookApplicationOnCreate(lpparam.classLoader);
 
-        // 2. Hook OkHttpClient.Builder.build() 捕获客户端和拦截请求
-        hookOkHttpBuilder(lpparam.classLoader);
+        // 2. 尝试 hook OkHttp（标准名 → 结构扫描 → HttpURLConnection 兜底）
+        hookOkHttp(lpparam.classLoader);
 
         // 3. Hook Retrofit 构建 捕获 base URL
         hookRetrofitBuilder(lpparam.classLoader);
@@ -65,6 +83,7 @@ public class Main implements IXposedHookLoadPackage {
                     protected void afterHookedMethod(MethodHookParam param) {
                         appContext = (Context) param.thisObject;
                         log("宿主 Application.onCreate 完成，获取 Context");
+                        showToast("GLMKit 已注入智谱清言");
 
                         // 通知模块自身进程：hook 已启动
                         broadcastActivation("com.glmkit.proxy.HOOK_STARTED");
@@ -79,9 +98,28 @@ public class Main implements IXposedHookLoadPackage {
     }
 
     // ════════════════════════════════════════════════════════════
-    //  OkHttpClient.Builder.build() — 捕获 OkHttpClient 实例
+    //  OkHttp Hook — 多策略递进
     // ════════════════════════════════════════════════════════════
-    private void hookOkHttpBuilder(ClassLoader cl) {
+    private void hookOkHttp(ClassLoader cl) {
+        // 策略1: okhttp3.OkHttpClient$Builder (标准 OkHttp 3.x/4.x)
+        if (tryHookOkHttp3Builder(cl)) return;
+        // 策略2: okhttp3.OkHttpClient.newCall() 直接 hook
+        if (tryHookOkHttp3NewCall(cl)) return;
+        // 策略3: com.squareup.okhttp (OkHttp 2.x)
+        if (tryHookOkHttp2(cl)) return;
+        // 策略5: HttpURLConnection 兜底（立即安装，非阻塞）
+        hookUrlConnection(cl);
+        // 策略4: dex 结构扫描（异步执行，避免 ANR）
+        new Thread(() -> {
+            try {
+                tryHookObfuscatedOkHttp(cl);
+            } catch (Throwable t) {
+                log("策略4 异步扫描异常: " + t.getMessage());
+            }
+        }, "glmkit-dex-scan").start();
+    }
+
+    private boolean tryHookOkHttp3Builder(ClassLoader cl) {
         try {
             Class<?> builderClass = cl.loadClass("okhttp3.OkHttpClient$Builder");
             XposedHelpers.findAndHookMethod(
@@ -91,21 +129,406 @@ public class Main implements IXposedHookLoadPackage {
                     protected void afterHookedMethod(MethodHookParam param) {
                         Object client = param.result;
                         if (client == null) return;
-
-                        // 保存捕获的 OkHttpClient
                         getCapture().setOkHttpClient(client);
-                        log("捕获 OkHttpClient 实例");
-
-                        // 通知模块自身进程：认证信息捕获成功
+                        log("捕获 OkHttpClient 实例 (Builder.build)");
+                        showToast("GLMKit 已捕获网络层");
                         broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
-
-                        // 尝试添加网络拦截器来捕获请求详情
                         installCaptureInterceptor(client, cl);
                     }
                 });
-            log("Hook OkHttpClient.Builder.build() 成功");
+            log("Hook OkHttpClient.Builder.build() 成功 (策略1)");
+            return true;
         } catch (Throwable t) {
-            log("hook OkHttp Builder 失败: " + t.getMessage());
+            log("策略1失败 (okhttp3.Builder): " + t.getMessage());
+            return false;
+        }
+    }
+
+    /** 策略2: hook okhttp3.OkHttpClient.newCall() 直接捕获请求 */
+    private boolean tryHookOkHttp3NewCall(ClassLoader cl) {
+        try {
+            Class<?> clientClass = cl.loadClass("okhttp3.OkHttpClient");
+            Class<?> requestClass = cl.loadClass("okhttp3.Request");
+            XposedHelpers.findAndHookMethod(
+                clientClass, "newCall", requestClass,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (getCapture().getOkHttpClient() == null) {
+                            getCapture().setOkHttpClient(param.thisObject);
+                            log("捕获 OkHttpClient 实例 (newCall)");
+                            showToast("GLMKit 已捕获网络层");
+                            broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+                        }
+                        try {
+                            extractRequestDetails(param.args[0], cl);
+                        } catch (Throwable ignored) {}
+                    }
+                });
+            log("Hook OkHttpClient.newCall() 成功 (策略2)");
+            return true;
+        } catch (Throwable t) {
+            log("策略2失败 (okhttp3.newCall): " + t.getMessage());
+            return false;
+        }
+    }
+
+    /** 策略3: OkHttp 2.x (com.squareup.okhttp) */
+    private boolean tryHookOkHttp2(ClassLoader cl) {
+        try {
+            Class<?> clientClass = cl.loadClass("com.squareup.okhttp.OkHttpClient");
+            Class<?> requestClass = cl.loadClass("com.squareup.okhttp.Request");
+            XposedHelpers.findAndHookMethod(
+                clientClass, "newCall", requestClass,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (getCapture().getOkHttpClient() == null) {
+                            getCapture().setOkHttpClient(param.thisObject);
+                            log("捕获 OkHttp2 客户端 (newCall)");
+                            showToast("GLMKit 已捕获网络层");
+                            broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+                        }
+                        try {
+                            Object request = param.args[0];
+                            Method urlMethod = request.getClass().getMethod("url");
+                            Object urlObj = urlMethod.invoke(request);
+                            String urlStr = urlObj.toString();
+                            if (isGlmApiUrl(urlStr)) {
+                                getCapture().setApiUrl(urlStr);
+                                log("捕获 GLM API URL: " + urlStr);
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                });
+            log("Hook OkHttp2.newCall() 成功 (策略3)");
+            return true;
+        } catch (Throwable t) {
+            log("策略3失败 (okhttp2): " + t.getMessage());
+            return false;
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  策略4: dex 结构扫描 — 找混淆后的 OkHttp 类（核心新增！）
+    //  参考 Deekseep 的 listDexClasses() + findTransportByStructure()
+    // ════════════════════════════════════════════════════════════
+
+    /**
+     * 枚举所有 dex 类名（参考 Deekseep）。
+     * 通过反射 BaseDexClassLoader.pathList.dexElements[].dexFile.entries() 获取。
+     */
+    @SuppressWarnings("unchecked")
+    private List<String> listDexClasses(ClassLoader cl) throws Exception {
+        ArrayList<String> out = new ArrayList<>();
+        Class<?> bdcl = Class.forName("dalvik.system.BaseDexClassLoader");
+        Field plF = bdcl.getDeclaredField("pathList");
+        plF.setAccessible(true);
+        Object pl = plF.get(cl);
+        Field deF = pl.getClass().getDeclaredField("dexElements");
+        deF.setAccessible(true);
+        Object[] els = (Object[]) deF.get(pl);
+        for (Object el : els) {
+            Field dfF = el.getClass().getDeclaredField("dexFile");
+            dfF.setAccessible(true);
+            Object df = dfF.get(el);
+            if (df == null) continue;
+            Method entries = df.getClass().getDeclaredMethod("entries");
+            entries.setAccessible(true);
+            Enumeration<String> en = (Enumeration<String>) entries.invoke(df);
+            while (en.hasMoreElements()) out.add(en.nextElement());
+        }
+        return out;
+    }
+
+    /**
+     * 按结构签名找混淆后的 OkHttp 类。
+     *
+     * OkHttp 结构签名：
+     * - Request 类：有 url() 和 headers() 方法，headers() 返回类型有 size()/name(int)/value(int)
+     * - OkHttpClient 类：有 newCall(Request) 方法返回非 void
+     *
+     * R8 混淆后类名变了，但方法名通常保留（OkHttp 公共 API）。
+     * 即使方法名也被混淆，我们通过参数/返回值结构匹配。
+     */
+    private boolean tryHookObfuscatedOkHttp(ClassLoader cl) {
+        log("策略4: 开始 dex 结构扫描找混淆 OkHttp 类...");
+        showToast("GLMKit: 扫描 dex 类结构中...");
+
+        try {
+            List<String> allClasses = listDexClasses(cl);
+            log("dex 类总数: " + allClasses.size());
+
+            Class<?> requestClass = null;
+            Class<?> headersClass = null;
+            Class<?> clientClass = null;
+            Method newCallMethod = null;
+
+            // 第一步：找 Headers 类 — 有 size() 返回 int, name(int) 返回 String, value(int) 返回 String
+            for (String className : allClasses) {
+                if (className == null || className.startsWith("android.")
+                        || className.startsWith("java.") || className.startsWith("kotlin")
+                        || className.startsWith("org.json") || className.startsWith("com.google")
+                        || className.startsWith("com.android")) continue;
+
+                Class<?> c;
+                try {
+                    c = Class.forName(className, false, cl);
+                } catch (Throwable t) { continue; }
+
+                if (isHeadersClass(c)) {
+                    headersClass = c;
+                    log("[SCAN] 找到 Headers 类: " + className);
+                    break;
+                }
+            }
+
+            // 第二步：找 Request 类 — 有 url() 和 headers() 方法
+            if (headersClass != null) {
+                for (String className : allClasses) {
+                    if (className == null || className.startsWith("android.")
+                            || className.startsWith("java.") || className.startsWith("kotlin")) continue;
+
+                    Class<?> c;
+                    try {
+                        c = Class.forName(className, false, cl);
+                    } catch (Throwable t) { continue; }
+
+                    if (isRequestClass(c, headersClass)) {
+                        requestClass = c;
+                        log("[SCAN] 找到 Request 类: " + className);
+                        break;
+                    }
+                }
+            }
+
+            // 第三步：找 OkHttpClient 类 — 有 newCall(Request) 方法
+            if (requestClass != null) {
+                for (String className : allClasses) {
+                    if (className == null || className.startsWith("android.")
+                            || className.startsWith("java.") || className.startsWith("kotlin")) continue;
+
+                    Class<?> c;
+                    try {
+                        c = Class.forName(className, false, cl);
+                    } catch (Throwable t) { continue; }
+
+                    Method newCall = findNewCallMethod(c, requestClass);
+                    if (newCall != null) {
+                        clientClass = c;
+                        newCallMethod = newCall;
+                        log("[SCAN] 找到 OkHttpClient 类: " + className
+                                + " newCall: " + newCall.getName());
+                        break;
+                    }
+                }
+            }
+
+            // 如果通过 Headers→Request→Client 链未找到，尝试直接找 newCall 方法
+            if (clientClass == null) {
+                log("[SCAN] 链式扫描未找到，尝试直接扫描 newCall 方法...");
+                for (String className : allClasses) {
+                    if (className == null || className.startsWith("android.")
+                            || className.startsWith("java.") || className.startsWith("kotlin")
+                            || className.startsWith("org.json") || className.startsWith("com.google")) continue;
+
+                    Class<?> c;
+                    try {
+                        c = Class.forName(className, false, cl);
+                    } catch (Throwable t) { continue; }
+
+                    // 找 newCall(X) 方法，X 有 url() 和 headers() 方法
+                    for (Method m : c.getDeclaredMethods()) {
+                        if (m.getParameterTypes().length != 1) continue;
+                        Class<?> paramType = m.getParameterTypes()[0];
+                        if (m.getReturnType() == void.class) continue;
+
+                        // 检查参数类型是否有 url() 和 headers() 方法
+                        if (hasUrlAndHeaders(paramType)) {
+                            clientClass = c;
+                            requestClass = paramType;
+                            newCallMethod = m;
+                            log("[SCAN] 直接扫描找到: " + className + "."
+                                    + m.getName() + "(" + paramType.getName() + ")");
+                            break;
+                        }
+                    }
+                    if (clientClass != null) break;
+                }
+            }
+
+            if (clientClass != null && requestClass != null && newCallMethod != null) {
+                // 找到了！Hook 混淆的 OkHttp 类
+                obfClientClass = clientClass;
+                obfRequestClass = requestClass;
+                if (headersClass != null) obfHeadersClass = headersClass;
+
+                hookFoundOkHttp(clientClass, requestClass, newCallMethod, cl);
+                return true;
+            }
+
+            log("策略4: dex 结构扫描未找到 OkHttp 类");
+            return false;
+
+        } catch (Throwable t) {
+            log("策略4 扫描失败: " + t.getMessage());
+            return false;
+        }
+    }
+
+    /** 检查类是否是 OkHttp Headers：有 size()->int, name(int)->String, value(int)->String */
+    private boolean isHeadersClass(Class<?> c) {
+        try {
+            Method size = null, name = null, value = null;
+            for (Method m : c.getDeclaredMethods()) {
+                if (m.getName().equals("size") && m.getParameterTypes().length == 0
+                        && m.getReturnType() == int.class) size = m;
+                if (m.getName().equals("name") && m.getParameterTypes().length == 1
+                        && m.getParameterTypes()[0] == int.class
+                        && m.getReturnType() == String.class) name = m;
+                if (m.getName().equals("value") && m.getParameterTypes().length == 1
+                        && m.getParameterTypes()[0] == int.class
+                        && m.getReturnType() == String.class) value = m;
+            }
+            return size != null && name != null && value != null;
+        } catch (Throwable t) { return false; }
+    }
+
+    /** 检查类是否是 OkHttp Request：有 url() 和 headers() 方法，headers() 返回 Headers 类型 */
+    private boolean isRequestClass(Class<?> c, Class<?> headersClass) {
+        try {
+            Method urlMethod = null, headersMethod = null;
+            for (Method m : c.getDeclaredMethods()) {
+                if (m.getName().equals("url") && m.getParameterTypes().length == 0) urlMethod = m;
+                if (m.getName().equals("headers") && m.getParameterTypes().length == 0
+                        && m.getReturnType() == headersClass) headersMethod = m;
+            }
+            return urlMethod != null && headersMethod != null;
+        } catch (Throwable t) { return false; }
+    }
+
+    /** 检查类是否有 url() 和 headers() 方法（不检查 headers 返回类型） */
+    private boolean hasUrlAndHeaders(Class<?> c) {
+        try {
+            boolean hasUrl = false, hasHeaders = false;
+            for (Method m : c.getDeclaredMethods()) {
+                if (m.getName().equals("url") && m.getParameterTypes().length == 0) hasUrl = true;
+                if (m.getName().equals("headers") && m.getParameterTypes().length == 0) hasHeaders = true;
+            }
+            return hasUrl && hasHeaders;
+        } catch (Throwable t) { return false; }
+    }
+
+    /** 在类中找 newCall(Request) 方法 */
+    private Method findNewCallMethod(Class<?> c, Class<?> requestClass) {
+        try {
+            for (Method m : c.getDeclaredMethods()) {
+                if (m.getName().equals("newCall") && m.getParameterTypes().length == 1
+                        && m.getParameterTypes()[0] == requestClass
+                        && m.getReturnType() != void.class) {
+                    return m;
+                }
+            }
+        } catch (Throwable t) {}
+        return null;
+    }
+
+    /** Hook 找到的混淆 OkHttp 类的 newCall 方法 */
+    private void hookFoundOkHttp(Class<?> clientClass, Class<?> requestClass,
+                                  Method newCallMethod, ClassLoader cl) {
+        try {
+            Class<?>[] ncParamTypes = newCallMethod.getParameterTypes();
+            Object[] ncHookArgs = new Object[ncParamTypes.length + 1];
+            for (int i = 0; i < ncParamTypes.length; i++) ncHookArgs[i] = ncParamTypes[i];
+            ncHookArgs[ncParamTypes.length] = new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    // 捕获 client 实例
+                    if (getCapture().getOkHttpClient() == null) {
+                        getCapture().setOkHttpClient(param.thisObject);
+                        log("捕获混淆 OkHttpClient 实例: " + clientClass.getName());
+                        showToast("GLMKit 已捕获网络层（结构扫描）");
+                        broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+                    }
+                    // 捕获请求详情
+                    try {
+                        extractRequestDetailsGeneric(param.args[0]);
+                    } catch (Throwable ignored) {}
+                }
+            };
+            XposedHelpers.findAndHookMethod(clientClass, newCallMethod.getName(), ncHookArgs);
+            log("✓ 策略4成功: Hook 混淆 OkHttp newCall: "
+                    + clientClass.getName() + "." + newCallMethod.getName());
+        } catch (Throwable t) {
+            log("Hook 混淆 OkHttp 失败: " + t.getMessage());
+        }
+    }
+
+    /** 策略5: HttpURLConnection 兜底 — 捕获 URL 和认证头 */
+    private void hookUrlConnection(ClassLoader cl) {
+        log("使用策略5: HttpURLConnection 兜底");
+        showToast("GLMKit: OkHttp 未找到，使用备用捕获方案");
+
+        try {
+            XposedHelpers.findAndHookMethod(
+                "java.net.HttpURLConnection", cl, "setRequestProperty",
+                String.class, String.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            String name = (String) param.args[0];
+                            String value = (String) param.args[1];
+                            if (name == null) return;
+                            String ln = name.toLowerCase();
+
+                            HttpURLConnection conn = (HttpURLConnection) param.thisObject;
+                            String urlStr = conn.getURL().toString();
+                            if (!isGlmApiUrl(urlStr)) return;
+
+                            getCapture().setApiUrl(urlStr);
+                            log("捕获 GLM API URL (HttpURLConnection): " + urlStr);
+
+                            if ("authorization".equals(ln)) {
+                                getCapture().setAuthToken(value);
+                                log("捕获 Authorization (HttpURLConnection)");
+                                showToast("GLMKit 已捕获认证信息");
+                                broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+                            } else if (ln.contains("token") || ln.contains("api-key") || ln.contains("apikey")) {
+                                getCapture().setApiKey(value);
+                                log("捕获 API Key (HttpURLConnection)");
+                                showToast("GLMKit 已捕获认证信息");
+                                broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+                            } else if (ln.contains("cookie")) {
+                                getCapture().setCookie(value);
+                                log("捕获 Cookie (HttpURLConnection)");
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                });
+            log("Hook HttpURLConnection.setRequestProperty 成功");
+        } catch (Throwable t) {
+            log("Hook HttpURLConnection 失败: " + t.getMessage());
+        }
+
+        try {
+            XposedHelpers.findAndHookMethod(
+                "java.net.URL", cl, "openConnection",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            String urlStr = param.thisObject.toString();
+                            if (isGlmApiUrl(urlStr)) {
+                                getCapture().setApiUrl(urlStr);
+                                log("捕获 GLM API URL (URL.openConnection): " + urlStr);
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                });
+            log("Hook URL.openConnection 成功");
+        } catch (Throwable t) {
+            log("Hook URL.openConnection 失败: " + t.getMessage());
         }
     }
 
@@ -122,9 +545,7 @@ public class Main implements IXposedHookLoadPackage {
                     protected void afterHookedMethod(MethodHookParam param) {
                         Object retrofit = param.result;
                         if (retrofit == null) return;
-
                         try {
-                            // Retrofit.baseUrl() 返回 HttpUrl
                             Method baseUrlMethod = retrofit.getClass().getMethod("baseUrl");
                             Object httpUrl = baseUrlMethod.invoke(retrofit);
                             if (httpUrl != null) {
@@ -145,14 +566,9 @@ public class Main implements IXposedHookLoadPackage {
     //  捕获拦截器 — 通过 Hook Call.execute/enqueue 捕获请求头
     // ════════════════════════════════════════════════════════════
     private void installCaptureInterceptor(Object client, ClassLoader cl) {
-        if (!realCallHooked.compareAndSet(false, true)) {
-            return; // 已安装过 RealCall hook，避免重复捕获
-        }
+        if (!realCallHooked.compareAndSet(false, true)) return;
         try {
-            // Hook RealCall.execute() 和 enqueue() 来捕获请求
             Class<?> realCallClass = cl.loadClass("okhttp3.internal.connection.RealCall");
-
-            // Hook execute()
             XposedHelpers.findAndHookMethod(
                 realCallClass, "execute",
                 new XC_MethodHook() {
@@ -161,8 +577,6 @@ public class Main implements IXposedHookLoadPackage {
                         captureRequest(param.thisObject, cl);
                     }
                 });
-
-            // Hook enqueue()
             XposedHelpers.findAndHookMethod(
                 realCallClass, "enqueue", cl.loadClass("okhttp3.Callback"),
                 new XC_MethodHook() {
@@ -171,73 +585,17 @@ public class Main implements IXposedHookLoadPackage {
                         captureRequest(param.thisObject, cl);
                     }
                 });
-
             log("安装请求捕获拦截器成功");
         } catch (Throwable t) {
-            realCallHooked.set(false); // 重置标志，允许后续重试
-            // RealCall 可能不存在或路径不同，尝试备用方案
-            log("安装 RealCall 拦截器失败，尝试 Interceptor 方案: " + t.getMessage());
-            installInterceptorChain(client, cl);
+            realCallHooked.set(false);
+            log("安装 RealCall 拦截器失败: " + t.getMessage());
         }
     }
 
-    private void installInterceptorChain(Object client, ClassLoader cl) {
-        try {
-            // 尝试通过 OkHttpClient.interceptors() 添加拦截器
-            Method interceptorsMethod = client.getClass().getMethod("interceptors");
-            Object interceptors = interceptorsMethod.invoke(client);
-            if (interceptors instanceof java.util.List) {
-                @SuppressWarnings("unchecked")
-                java.util.List<Object> list = (java.util.List<Object>) interceptors;
-                // 创建一个动态拦截器代理
-                Object interceptorProxy = createInterceptorProxy(cl);
-                if (interceptorProxy != null) {
-                    list.add(0, interceptorProxy);
-                    log("通过 interceptors() 添加捕获拦截器成功");
-                }
-            }
-        } catch (Throwable t) {
-            log("Interceptor 方案也失败: " + t.getMessage());
-        }
-    }
-
-    private Object createInterceptorProxy(ClassLoader cl) {
-        try {
-            // 使用 Proxy 创建 Interceptor 动态代理
-            Class<?> interceptorClass = cl.loadClass("okhttp3.Interceptor");
-            return java.lang.reflect.Proxy.newProxyInstance(
-                cl, new Class<?>[]{interceptorClass},
-                (proxy, method, args) -> {
-                    if ("intercept".equals(method.getName())) {
-                        Object chain = args[0];
-                        try {
-                            // chain.request() 获取 Request
-                            Method requestMethod = chain.getClass().getMethod("request");
-                            Object request = requestMethod.invoke(chain);
-                            extractRequestDetails(request, cl);
-                            // chain.proceed(request) 继续请求
-                            Method proceedMethod = chain.getClass().getMethod("proceed",
-                                cl.loadClass("okhttp3.Request"));
-                            return proceedMethod.invoke(chain, request);
-                        } catch (Throwable ignored) {}
-                    }
-                    return null;
-                });
-        } catch (Throwable t) {
-            log("创建拦截器代理失败: " + t.getMessage());
-            return null;
-        }
-    }
-
-    // ════════════════════════════════════════════════════════════
-    //  请求捕获 — 提取 URL、认证头
-    // ════════════════════════════════════════════════════════════
     private void captureRequest(Object call, ClassLoader cl) {
         try {
-            // RealCall.originalRequest 字段
             Object request = XposedHelpers.getObjectField(call, "originalRequest");
             if (request == null) {
-                // 尝试 getOriginalRequest() 方法
                 try {
                     Method m = call.getClass().getMethod("getOriginalRequest");
                     request = m.invoke(call);
@@ -249,31 +607,77 @@ public class Main implements IXposedHookLoadPackage {
         } catch (Throwable ignored) {}
     }
 
+    // ════════════════════════════════════════════════════════════
+    //  请求捕获 — 提取 URL、认证头
+    // ════════════════════════════════════════════════════════════
+
+    /** 标准 OkHttp Request 提取（类名未混淆时） */
     private void extractRequestDetails(Object request, ClassLoader cl) {
         try {
-            // request.url() → HttpUrl
             Method urlMethod = request.getClass().getMethod("url");
             Object httpUrl = urlMethod.invoke(request);
             String urlStr = httpUrl.toString();
 
-            // 只捕获 GLM 相关的 API 请求
             if (isGlmApiUrl(urlStr)) {
                 getCapture().setApiUrl(urlStr);
                 log("捕获 GLM API 请求 URL: " + urlStr);
 
-                // request.headers() → Headers
                 Method headersMethod = request.getClass().getMethod("headers");
                 Object headers = headersMethod.invoke(request);
-
-                // 遍历 headers 捕获认证信息
                 extractAuthFromHeaders(headers, cl);
             }
         } catch (Throwable ignored) {}
     }
 
+    /**
+     * 通用 Request 提取（混淆类，通过反射找 url()/headers() 方法）。
+     * 不依赖固定类名，通过方法名匹配。
+     */
+    private void extractRequestDetailsGeneric(Object request) {
+        try {
+            Class<?> reqClass = request.getClass();
+
+            // 找 url() 方法
+            Method urlMethod = null;
+            for (Method m : reqClass.getMethods()) {
+                if (m.getName().equals("url") && m.getParameterTypes().length == 0) {
+                    urlMethod = m;
+                    break;
+                }
+            }
+            if (urlMethod == null) return;
+
+            Object httpUrl = urlMethod.invoke(request);
+            if (httpUrl == null) return;
+            String urlStr = httpUrl.toString();
+
+            if (!isGlmApiUrl(urlStr)) return;
+
+            getCapture().setApiUrl(urlStr);
+            log("捕获 GLM API 请求 URL (混淆): " + urlStr);
+
+            // 找 headers() 方法
+            Method headersMethod = null;
+            for (Method m : reqClass.getMethods()) {
+                if (m.getName().equals("headers") && m.getParameterTypes().length == 0) {
+                    headersMethod = m;
+                    break;
+                }
+            }
+            if (headersMethod == null) return;
+
+            Object headers = headersMethod.invoke(request);
+            if (headers == null) return;
+
+            // 通用 headers 遍历：找 size(), name(int), value(int) 方法
+            extractAuthFromHeadersGeneric(headers);
+
+        } catch (Throwable ignored) {}
+    }
+
+    /** 标准 Headers 提取 */
     private void extractAuthFromHeaders(Object headers, ClassLoader cl) {
         try {
-            // Headers.size() / Headers.name(i) / Headers.value(i)
             Method sizeMethod = headers.getClass().getMethod("size");
             int size = (int) sizeMethod.invoke(headers);
             Method nameMethod = headers.getClass().getMethod("name", int.class);
@@ -282,23 +686,56 @@ public class Main implements IXposedHookLoadPackage {
             for (int i = 0; i < size; i++) {
                 String name = (String) nameMethod.invoke(headers, i);
                 String value = (String) valueMethod.invoke(headers, i);
-                if (name == null) continue;
-
-                String ln = name.toLowerCase();
-                if ("authorization".equals(ln)) {
-                    getCapture().setAuthToken(value);
-                    log("捕获 Authorization 头");
-                } else if (ln.contains("token") || ln.contains("api-key") || ln.contains("apikey")) {
-                    getCapture().setApiKey(value);
-                    log("捕获 API Key 头: " + name);
-                } else if (ln.contains("cookie")) {
-                    getCapture().setCookie(value);
-                    log("捕获 Cookie 头");
-                } else if ("x-device-id".equals(ln) || ln.contains("device")) {
-                    getCapture().setDeviceId(value);
-                }
+                processHeader(name, value);
             }
         } catch (Throwable ignored) {}
+    }
+
+    /** 通用 Headers 提取（混淆类，通过反射找 size/name/value 方法） */
+    private void extractAuthFromHeadersGeneric(Object headers) {
+        try {
+            Class<?> hClass = headers.getClass();
+            Method sizeMethod = null, nameMethod = null, valueMethod = null;
+
+            for (Method m : hClass.getMethods()) {
+                if (m.getName().equals("size") && m.getParameterTypes().length == 0
+                        && m.getReturnType() == int.class) sizeMethod = m;
+                if (m.getName().equals("name") && m.getParameterTypes().length == 1
+                        && m.getParameterTypes()[0] == int.class
+                        && m.getReturnType() == String.class) nameMethod = m;
+                if (m.getName().equals("value") && m.getParameterTypes().length == 1
+                        && m.getParameterTypes()[0] == int.class
+                        && m.getReturnType() == String.class) valueMethod = m;
+            }
+            if (sizeMethod == null || nameMethod == null || valueMethod == null) return;
+
+            int size = (int) sizeMethod.invoke(headers);
+            for (int i = 0; i < size; i++) {
+                String name = (String) nameMethod.invoke(headers, i);
+                String value = (String) valueMethod.invoke(headers, i);
+                processHeader(name, value);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** 处理单个 header，捕获认证信息 */
+    private void processHeader(String name, String value) {
+        if (name == null || value == null) return;
+        String ln = name.toLowerCase();
+
+        if ("authorization".equals(ln)) {
+            getCapture().setAuthToken(value);
+            log("捕获 Authorization 头");
+            showToast("GLMKit 已捕获认证信息");
+        } else if (ln.contains("token") || ln.contains("api-key") || ln.contains("apikey")) {
+            getCapture().setApiKey(value);
+            log("捕获 API Key 头: " + name);
+        } else if (ln.contains("cookie")) {
+            getCapture().setCookie(value);
+            log("捕获 Cookie 头");
+        } else if ("x-device-id".equals(ln) || ln.contains("device")) {
+            getCapture().setDeviceId(value);
+        }
     }
 
     private boolean isGlmApiUrl(String url) {
@@ -318,15 +755,17 @@ public class Main implements IXposedHookLoadPackage {
     private void startGatewayWhenReady() {
         new Thread(() -> {
             try {
-                // 等待 OkHttp 客户端捕获
+                // 短暂等待 OkHttp 捕获（最多 3s），然后立即启动网关
                 int waited = 0;
-                while (getCapture().getOkHttpClient() == null && waited < 30_000) {
-                    Thread.sleep(500);
-                    waited += 500;
+                while (getCapture().getOkHttpClient() == null && waited < 3_000) {
+                    Thread.sleep(200);
+                    waited += 200;
                 }
 
-                if (getCapture().getOkHttpClient() == null) {
-                    log("⚠️ 等待 OkHttp 客户端超时 (30s)，网关将以未就绪状态启动");
+                if (getCapture().getOkHttpClient() != null) {
+                    log("OkHttp 客户端已捕获，启动网关");
+                } else {
+                    log("OkHttp 未捕获，网关以备用模式启动 (HttpURLConnection)");
                 }
 
                 if (appContext == null) {
@@ -336,8 +775,6 @@ public class Main implements IXposedHookLoadPackage {
 
                 Context ctx = appContext.getApplicationContext();
 
-                // 读取配置的端口 — 使用 XSharedPreferences 读取模块自身的偏好
-                // (模块运行在目标应用进程中，普通 SharedPreferences 读到的是目标应用的偏好)
                 int port = 8765;
                 try {
                     XSharedPreferences xPrefs = new XSharedPreferences("com.glmkit.proxy", "glmkit_settings");
@@ -345,7 +782,6 @@ public class Main implements IXposedHookLoadPackage {
                     xPrefs.makeReadable();
                     port = xPrefs.getInt("port", 8765);
                     LocalApiGateway.setListenPort(port);
-                    // 读取自定义 API Key（null 或空表示不验证）
                     String apiKey = xPrefs.getString("api_key", null);
                     LocalApiGateway.setApiKey(apiKey);
                     log("配置监听端口: " + port + " (从模块偏好读取)");
@@ -356,13 +792,14 @@ public class Main implements IXposedHookLoadPackage {
                 int actualPort = LocalApiGateway.start(ctx, backend);
 
                 if (!LocalApiGateway.isRunning()) {
-                    log("✗ 网关启动失败，所有端口均被占用，不发送启动广播");
+                    log("✗ 网关启动失败，所有端口均被占用");
+                    showToast("GLMKit 网关启动失败（端口被占用）");
                     return;
                 }
 
                 log("本地 API 网关已启动，实际端口: " + actualPort);
+                showToast("GLMKit 网关已启动，端口: " + actualPort);
 
-                // 通知模块自身进程：网关已启动
                 Intent gatewayIntent = new Intent("com.glmkit.proxy.GATEWAY_STARTED");
                 gatewayIntent.setPackage("com.glmkit.proxy");
                 gatewayIntent.putExtra("port", actualPort);
@@ -378,13 +815,8 @@ public class Main implements IXposedHookLoadPackage {
     }
 
     // ════════════════════════════════════════════════════════════
-    //  激活广播 — 通知模块自身进程记录激活状态
+    //  激活广播
     // ════════════════════════════════════════════════════════════
-
-    /**
-     * 向模块自身包发送显式广播，通知 XposedActivationReceiver 记录状态。
-     * 广播从目标应用进程发出，由模块自身进程的 Receiver 接收。
-     */
     private void broadcastActivation(String action) {
         try {
             Intent intent = new Intent(action);
@@ -417,5 +849,15 @@ public class Main implements IXposedHookLoadPackage {
 
     static void log(String msg) {
         XposedBridge.log("[" + TAG + "] " + msg);
+    }
+
+    static void showToast(final String msg) {
+        try {
+            new Handler(Looper.getMainLooper()).post(() -> {
+                try {
+                    Toast.makeText(Main.appContext, msg, Toast.LENGTH_LONG).show();
+                } catch (Throwable ignored) {}
+            });
+        } catch (Throwable ignored) {}
     }
 }
