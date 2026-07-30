@@ -310,7 +310,7 @@ public class Main implements IXposedHookLoadPackage {
         }
     }
 
-    /** 从混淆 Request 提取 URL: nu.Request.k() → nu.u (HttpUrl) → toString() */
+    /** 从混淆 Request 提取 URL 和 auth: nu.Request.k() → nu.u, nu.Request.d(String) → String */
     private void extractObfuscatedRequestUrl(Object request) {
         try {
             // nu.Request.k() → nu.u (HttpUrl)
@@ -321,12 +321,37 @@ public class Main implements IXposedHookLoadPackage {
 
             if (isGlmApiUrl(urlStr)) {
                 getCapture().setApiUrl(urlStr);
-                if (Main.getInstance() != null) {
-                    // 只在首次捕获时日志
-                    if (getCapture().getBaseUrl() == null) {
-                        log("捕获 GLM API URL (混淆): " + urlStr);
-                    }
+                if (getCapture().getBaseUrl() == null) {
+                    log("捕获 GLM API URL (混淆): " + urlStr);
                 }
+                // v1.0.51: 提取 auth 头
+                extractAuthFromObfuscatedRequest(request);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** v1.0.51: 从混淆 Request 提取 Authorization / x-api-key / Cookie */
+    private void extractAuthFromObfuscatedRequest(Object request) {
+        try {
+            // nu.Request.d(String) → String (读取头)
+            Method headerMethod = request.getClass().getMethod("d", String.class);
+
+            String auth = (String) headerMethod.invoke(request, "Authorization");
+            if (auth != null && !auth.isEmpty() && getCapture().getAuthToken() == null) {
+                getCapture().setAuthToken(auth);
+                log("✓ 捕获 Authorization (混淆 Request): " + auth.substring(0, Math.min(20, auth.length())) + "...");
+            }
+
+            String apiKey = (String) headerMethod.invoke(request, "x-api-key");
+            if (apiKey != null && !apiKey.isEmpty() && getCapture().getApiKey() == null) {
+                getCapture().setApiKey(apiKey);
+                log("✓ 捕获 x-api-key (混淆 Request)");
+            }
+
+            String cookie = (String) headerMethod.invoke(request, "Cookie");
+            if (cookie != null && !cookie.isEmpty() && getCapture().getCookie() == null) {
+                getCapture().setCookie(cookie);
+                log("✓ 捕获 Cookie (混淆 Request)");
             }
         } catch (Throwable ignored) {}
     }

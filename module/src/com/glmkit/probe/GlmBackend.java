@@ -399,7 +399,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
         if (!clientClassName.equals("okhttp3.OkHttpClient")
                 && !clientClassName.equals("com.squareup.okhttp.OkHttpClient")) {
             // v1.0.49: 混淆类 — 使用已知混淆类名构造原生请求 (Deekseep 方案)
-            // 不添加 auth 头 — OkHttpClient 的拦截器自动处理认证
+            // v1.0.51: 同时添加捕获的 auth 头作为兜底
             try {
                 return executeWithObfuscatedOkHttp(client, url, body, stream);
             } catch (Throwable t) {
@@ -510,14 +510,36 @@ public class GlmBackend implements LocalApiGateway.Backend {
         methodMethod.invoke(builder, "POST", requestBody);
 
         // 3c. Accept 头 (流式)
+        Method addHeaderMethod = builderClass.getMethod("a", String.class, String.class);
         if (stream) {
             try {
-                Method addHeaderMethod = builderClass.getMethod("a", String.class, String.class);
                 addHeaderMethod.invoke(builder, "Accept", "text/event-stream");
             } catch (Throwable ignored) {}
         }
 
-        // 3d. 构建: builder.b()
+        // 3d. v1.0.51: 添加 auth 头 — 兜底 (拦截器可能不加 auth)
+        String authToken = capture.getAuthToken();
+        String apiKey = capture.getApiKey();
+        String cookie = capture.getCookie();
+        if (authToken != null) {
+            String token = authToken.startsWith("Bearer ") ? authToken : "Bearer " + authToken;
+            addHeaderMethod.invoke(builder, "Authorization", token);
+            log("添加 Authorization 头 (混淆 OkHttp)");
+        } else if (apiKey != null) {
+            addHeaderMethod.invoke(builder, "Authorization",
+                apiKey.startsWith("Bearer ") ? apiKey : "Bearer " + apiKey);
+            addHeaderMethod.invoke(builder, "x-api-key", apiKey);
+            log("添加 x-api-key 头 (混淆 OkHttp)");
+        }
+        if (cookie != null) {
+            addHeaderMethod.invoke(builder, "Cookie", cookie);
+            log("添加 Cookie 头 (混淆 OkHttp)");
+        }
+        if (authToken == null && apiKey == null && cookie == null) {
+            log("⚠ 无 auth 头可用 — 依赖拦截器自动添加");
+        }
+
+        // 3e. 构建: builder.b()
         Method buildMethod = builderClass.getMethod("b");
         Object request = buildMethod.invoke(builder);
 
@@ -530,7 +552,13 @@ public class GlmBackend implements LocalApiGateway.Backend {
         Method executeMethod = call.getClass().getMethod("execute");
         Object response = executeMethod.invoke(call);
 
-        log("✓ 混淆 OkHttp 请求成功 (Deekseep 方案)");
+        // v1.0.51: 记录响应码
+        try {
+            int respCode = getResponseCode(response);
+            log("✓ 混淆 OkHttp 请求成功 (Deekseep) code=" + respCode + " url=" + url);
+        } catch (Throwable ignored) {
+            log("✓ 混淆 OkHttp 请求成功 (Deekseep 方案)");
+        }
         return response;
     }
 
