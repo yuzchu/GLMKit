@@ -289,6 +289,7 @@ export ANDROID_HOME=/path/to/android-sdk
 
 | 版本 | 修复内容 |
 |------|----------|
+| v1.0.54 | 修复 401 auth 过期：(1) OkHttp hook 每次都更新 auth（不再只捕获一次）；(2) SSL hook 只从 bigmodel 域名捕获 auth（避免 chatglm.cn 等网页域名覆盖 API auth）；(3) OkHttp Request hook 同样只从 bigmodel URL 提取 auth；(4) 增加诊断日志 |
 | v1.0.32 | 移除 AndroidManifest 中不必要的存储权限（READ/WRITE/MANAGE_EXTERNAL_STORAGE），模块仅需网络和前台服务权限 |
 | v1.0.31 | 流式响应 JSON null 防护补全：`parseStreamResponse()` 中 `content`/`reasoning_content` 增量增加 `"null".equals()` 检查，与 `finish_reason` 和非流式解析处理一致 |
 | v1.0.30 | 非流式响应 JSON null 处理修复：`finish_reason`/`reasoning_content`/`content` 为 JSON null 时正确处理，与流式解析一致 |

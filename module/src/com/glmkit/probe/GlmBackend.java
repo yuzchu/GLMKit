@@ -544,7 +544,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
         if (authToken != null) {
             String token = authToken.startsWith("Bearer ") ? authToken : "Bearer " + authToken;
             addHeaderMethod.invoke(builder, "Authorization", token);
-            log("添加 Authorization 头 (混淆 OkHttp)");
+            log("添加 Authorization 头 (混淆 OkHttp): " + token.substring(0, Math.min(25, token.length())) + "...");
         } else if (apiKey != null) {
             addHeaderMethod.invoke(builder, "Authorization",
                 apiKey.startsWith("Bearer ") ? apiKey : "Bearer " + apiKey);

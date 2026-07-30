@@ -324,12 +324,17 @@ public class Main implements IXposedHookLoadPackage {
             String urlStr = httpUrl.toString();
 
             if (isGlmApiUrl(urlStr)) {
-                getCapture().setApiUrl(urlStr);
-                if (getCapture().getBaseUrl() == null) {
-                    log("捕获 GLM API URL (混淆): " + urlStr);
+                // v1.0.52: 只接受 bigmodel 域名作为 API URL
+                if (urlStr.toLowerCase().contains("bigmodel")) {
+                    getCapture().setApiUrl(urlStr);
+                    if (getCapture().getBaseUrl() == null) {
+                        log("捕获 GLM API URL (混淆): " + urlStr);
+                    }
                 }
-                // v1.0.51: 提取 auth 头
-                extractAuthFromObfuscatedRequest(request);
+                // v1.0.54: 只从 bigmodel API 请求提取 auth (不从 chatglm.cn 等网页请求提取)
+                if (urlStr.toLowerCase().contains("bigmodel")) {
+                    extractAuthFromObfuscatedRequest(request);
+                }
             }
         } catch (Throwable ignored) {}
     }
@@ -341,23 +346,29 @@ public class Main implements IXposedHookLoadPackage {
             Method headerMethod = request.getClass().getMethod("d", String.class);
 
             String auth = (String) headerMethod.invoke(request, "Authorization");
-            if (auth != null && !auth.isEmpty() && getCapture().getAuthToken() == null) {
+            if (auth != null && !auth.isEmpty()) {
+                String old = getCapture().getAuthToken();
                 getCapture().setAuthToken(auth);
-                log("✓ 捕获 Authorization (混淆 Request): " + auth.substring(0, Math.min(20, auth.length())) + "...");
+                if (old == null || !old.equals(auth)) {
+                    log("✓ 捕获 Authorization (混淆 Request): " + auth.substring(0, Math.min(30, auth.length())) + "...");
+                }
+            } else {
+                log("⚠ Request 无 Authorization 头 (d 方法返回 null)");
             }
 
             String apiKey = (String) headerMethod.invoke(request, "x-api-key");
-            if (apiKey != null && !apiKey.isEmpty() && getCapture().getApiKey() == null) {
+            if (apiKey != null && !apiKey.isEmpty()) {
                 getCapture().setApiKey(apiKey);
                 log("✓ 捕获 x-api-key (混淆 Request)");
             }
 
             String cookie = (String) headerMethod.invoke(request, "Cookie");
-            if (cookie != null && !cookie.isEmpty() && getCapture().getCookie() == null) {
+            if (cookie != null && !cookie.isEmpty()) {
                 getCapture().setCookie(cookie);
-                log("✓ 捕获 Cookie (混淆 Request)");
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            log("⚠ extractAuth 异常: " + t.getMessage());
+        }
     }
 
     private boolean tryHookOkHttp3Builder(ClassLoader cl) {
@@ -1154,15 +1165,11 @@ public class Main implements IXposedHookLoadPackage {
         }
     }
 
-    /** 检查主机名是否是 GLM API */
+    /** 检查主机名是否是 GLM API (v1.0.54: 只接受 bigmodel，避免从 chatglm.cn 等网页捕获错误 auth) */
     private boolean isGlmHost(String host) {
         if (host == null) return false;
         String lower = host.toLowerCase();
-        return lower.contains("bigmodel") ||
-               lower.contains("zhipuai") ||
-               lower.contains("chatglm") ||
-               lower.contains("qingyan") ||
-               lower.contains("glm.cn");
+        return lower.contains("bigmodel");
     }
 
     // ════════════════════════════════════════════════════════════
@@ -1222,12 +1229,17 @@ public class Main implements IXposedHookLoadPackage {
             String urlStr = httpUrl.toString();
 
             if (isGlmApiUrl(urlStr)) {
-                getCapture().setApiUrl(urlStr);
-                log("捕获 GLM API 请求 URL: " + urlStr);
-
-                Method headersMethod = request.getClass().getMethod("headers");
-                Object headers = headersMethod.invoke(request);
-                extractAuthFromHeaders(headers, cl);
+                // v1.0.52: 只接受 bigmodel 域名作为 API URL
+                if (urlStr.toLowerCase().contains("bigmodel")) {
+                    getCapture().setApiUrl(urlStr);
+                    log("捕获 GLM API 请求 URL: " + urlStr);
+                }
+                // v1.0.54: 只从 bigmodel API 请求提取 auth
+                if (urlStr.toLowerCase().contains("bigmodel")) {
+                    Method headersMethod = request.getClass().getMethod("headers");
+                    Object headers = headersMethod.invoke(request);
+                    extractAuthFromHeaders(headers, cl);
+                }
             }
         } catch (Throwable ignored) {}
     }
@@ -1255,6 +1267,10 @@ public class Main implements IXposedHookLoadPackage {
             String urlStr = httpUrl.toString();
 
             if (!isGlmApiUrl(urlStr)) return;
+
+            // v1.0.52: 只接受 bigmodel 域名作为 API URL
+            // v1.0.54: 只从 bigmodel API 请求提取 auth
+            if (!urlStr.toLowerCase().contains("bigmodel")) return;
 
             getCapture().setApiUrl(urlStr);
             log("捕获 GLM API 请求 URL (混淆): " + urlStr);
