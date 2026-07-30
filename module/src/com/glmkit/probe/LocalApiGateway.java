@@ -413,6 +413,26 @@ public class LocalApiGateway {
             return;
         }
 
+        // Web 控制面板
+        if ("GET".equals(method) && ("/".equals(path) || "/ui".equals(path))) {
+            sendResponse(os, 200, "OK", "text/html; charset=utf-8", getWebUI());
+            return;
+        }
+
+        // 模型管理端点（不需要 API Key 验证）
+        if ("POST".equals(method) && "/v1/models/capture".equals(path)) {
+            handleCaptureModel(os);
+            return;
+        }
+        if ("POST".equals(method) && "/v1/models/add".equals(path)) {
+            handleAddModel(body, os);
+            return;
+        }
+        if ("POST".equals(method) && "/v1/models/delete".equals(path)) {
+            handleDeleteModel(body, os);
+            return;
+        }
+
         // 健康检查
         if ("GET".equals(method) && "/healthz".equals(path)) {
             JSONObject health = new JSONObject();
@@ -536,6 +556,151 @@ public class LocalApiGateway {
     }
 
     // ════════════════════════════════════════════════════════════
+    //  持久化模型列表 — SharedPreferences
+    // ════════════════════════════════════════════════════════════
+    private static final String PREF_MODELS_KEY = "custom_models";
+
+    private static java.util.List<String> getPersistentModels() {
+        java.util.List<String> models = new java.util.ArrayList<>();
+        if (context == null) return models;
+        try {
+            SharedPreferences prefs = context.getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE);
+            String json = prefs.getString(PREF_MODELS_KEY, null);
+            if (json != null && !json.isEmpty()) {
+                JSONArray arr = new JSONArray(json);
+                for (int i = 0; i < arr.length(); i++) {
+                    String m = arr.getString(i);
+                    if (m != null && !m.isEmpty() && !models.contains(m)) {
+                        models.add(m);
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            log("读取持久化模型列表失败: " + t.getMessage());
+        }
+        return models;
+    }
+
+    private static void savePersistentModels(java.util.List<String> models) {
+        if (context == null) return;
+        try {
+            JSONArray arr = new JSONArray();
+            for (String m : models) {
+                if (m != null && !m.isEmpty()) arr.put(m);
+            }
+            SharedPreferences prefs = context.getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE);
+            prefs.edit().putString(PREF_MODELS_KEY, arr.toString()).apply();
+            log("持久化模型列表已保存: " + models.size() + " 个模型");
+        } catch (Throwable t) {
+            log("保存持久化模型列表失败: " + t.getMessage());
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  /v1/models/capture — 捕获当前模型到持久化列表
+    // ════════════════════════════════════════════════════════════
+    private static void handleCaptureModel(OutputStream os) throws IOException {
+        JSONObject resp = new JSONObject();
+        try {
+            String capturedModel = (backend != null) ? backend.getCapturedModel() : null;
+            if (capturedModel == null || capturedModel.isEmpty()) {
+                resp.put("success", false);
+                resp.put("message", "当前没有捕获到模型，请先在智谱清言中发起一次对话");
+                sendResponse(os, 400, "Bad Request", "application/json", resp.toString());
+                return;
+            }
+            java.util.List<String> models = getPersistentModels();
+            if (!models.contains(capturedModel)) {
+                models.add(capturedModel);
+                savePersistentModels(models);
+                resp.put("success", true);
+                resp.put("message", "模型已捕获并添加到列表: " + capturedModel);
+            } else {
+                resp.put("success", true);
+                resp.put("message", "模型已在列表中: " + capturedModel);
+            }
+            resp.put("model", capturedModel);
+            resp.put("models", new JSONArray(models));
+        } catch (Exception e) {
+            try { resp.put("success", false); resp.put("message", "捕获失败: " + e.getMessage()); } catch (Exception ignored) {}
+        }
+        sendResponse(os, 200, "OK", "application/json", resp.toString());
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  /v1/models/add — 手动添加模型
+    // ════════════════════════════════════════════════════════════
+    private static void handleAddModel(byte[] body, OutputStream os) throws IOException {
+        JSONObject resp = new JSONObject();
+        try {
+            if (body == null || body.length == 0) {
+                resp.put("success", false);
+                resp.put("message", "请求体为空");
+                sendResponse(os, 400, "Bad Request", "application/json", resp.toString());
+                return;
+            }
+            JSONObject req = new JSONObject(new String(body, StandardCharsets.UTF_8));
+            String model = req.optString("model", "");
+            if (model.isEmpty()) {
+                resp.put("success", false);
+                resp.put("message", "model 字段为空");
+                sendResponse(os, 400, "Bad Request", "application/json", resp.toString());
+                return;
+            }
+            java.util.List<String> models = getPersistentModels();
+            if (!models.contains(model)) {
+                models.add(model);
+                savePersistentModels(models);
+                resp.put("success", true);
+                resp.put("message", "模型已添加: " + model);
+            } else {
+                resp.put("success", true);
+                resp.put("message", "模型已存在: " + model);
+            }
+            resp.put("models", new JSONArray(models));
+        } catch (Exception e) {
+            try { resp.put("success", false); resp.put("message", "添加失败: " + e.getMessage()); } catch (Exception ignored) {}
+        }
+        sendResponse(os, 200, "OK", "application/json", resp.toString());
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  /v1/models/delete — 删除模型
+    // ════════════════════════════════════════════════════════════
+    private static void handleDeleteModel(byte[] body, OutputStream os) throws IOException {
+        JSONObject resp = new JSONObject();
+        try {
+            if (body == null || body.length == 0) {
+                resp.put("success", false);
+                resp.put("message", "请求体为空");
+                sendResponse(os, 400, "Bad Request", "application/json", resp.toString());
+                return;
+            }
+            JSONObject req = new JSONObject(new String(body, StandardCharsets.UTF_8));
+            String model = req.optString("model", "");
+            if (model.isEmpty()) {
+                resp.put("success", false);
+                resp.put("message", "model 字段为空");
+                sendResponse(os, 400, "Bad Request", "application/json", resp.toString());
+                return;
+            }
+            java.util.List<String> models = getPersistentModels();
+            if (models.remove(model)) {
+                savePersistentModels(models);
+                resp.put("success", true);
+                resp.put("message", "模型已删除: " + model);
+            } else {
+                resp.put("success", false);
+                resp.put("message", "模型不在列表中: " + model);
+            }
+            resp.put("models", new JSONArray(models));
+        } catch (Exception e) {
+            try { resp.put("success", false); resp.put("message", "删除失败: " + e.getMessage()); } catch (Exception ignored) {}
+        }
+        sendResponse(os, 200, "OK", "application/json", resp.toString());
+    }
+
+    // ════════════════════════════════════════════════════════════
     //  /v1/models
     // ════════════════════════════════════════════════════════════
     private static void handleListModels(OutputStream os) throws IOException {
@@ -544,31 +709,9 @@ public class LocalApiGateway {
             resp.put("object", "list");
             JSONArray data = new JSONArray();
 
-            // v1.0.53: 拦截到的真实模型放最前面
-            String capturedModel = null;
-            if (backend != null) {
-                capturedModel = backend.getCapturedModel();
-            }
-            if (capturedModel != null && !capturedModel.isEmpty()) {
-                JSONObject model = new JSONObject();
-                model.put("id", capturedModel);
-                model.put("object", "model");
-                model.put("created", System.currentTimeMillis() / 1000);
-                model.put("owned_by", "zhipu");
-                data.put(model);
-            }
-
-            String[] models = {
-                "glm-4-plus", "glm-4", "glm-4-flash", "glm-4-flashx", "glm-4-long",
-                "glm-4-air", "glm-4-airx", "glm-4-0520",
-                "glm-4v", "glm-4v-flash", "glm-4v-plus",
-                "glm-4.6", "glm-4.5", "glm-4.5-air", "glm-4.5-flash",
-                "codegeex-4", "glm-4-alltools", "glm-z1-flash"
-            };
-
+            // v1.0.64: 只返回持久化模型列表
+            java.util.List<String> models = getPersistentModels();
             for (String m : models) {
-                // 跳过已添加的拦截模型
-                if (m.equals(capturedModel)) continue;
                 JSONObject model = new JSONObject();
                 model.put("id", m);
                 model.put("object", "model");
@@ -974,6 +1117,141 @@ public class LocalApiGateway {
             readLine(is);
         }
         return buf.toByteArray();
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  Web UI 控制面板
+    // ════════════════════════════════════════════════════════════
+    private static String getWebUI() {
+        return "<!DOCTYPE html><html lang=\"zh\"><head><meta charset=\"utf-8\">"
+            + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            + "<title>GLMKit 控制面板</title><style>"
+            + "*{box-sizing:border-box;margin:0;padding:0}"
+            + "body{font-family:system-ui,sans-serif;background:#1a1a2e;color:#eee;padding:16px;max-width:800px;margin:0 auto}"
+            + "h1{text-align:center;color:#0f0;margin:10px 0;font-size:20px}"
+            + "h2{color:#0af;margin:14px 0 6px;font-size:16px;border-bottom:1px solid #333;padding-bottom:4px}"
+            + ".card{background:#16213e;border-radius:8px;padding:12px;margin:8px 0}"
+            + "button{background:#0f3460;color:#fff;border:none;border-radius:4px;padding:8px 16px;cursor:pointer;font-size:14px}"
+            + "button:hover{background:#16537e}button:disabled{opacity:.5;cursor:default}"
+            + "button.danger{background:#e94560}button.danger:hover{background:#c81e3a}"
+            + "button.success{background:#0f0;color:#000}button.success:hover{background:#0c0}"
+            + "input,textarea{width:100%;background:#0a0f1e;color:#eee;border:1px solid #333;border-radius:4px;padding:8px;font-size:14px}"
+            + "textarea{resize:vertical;min-height:60px}"
+            + ".row{display:flex;gap:8px;align-items:center;margin:6px 0}"
+            + ".row button{white-space:nowrap}"
+            + ".model-item{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:#0a0f1e;border-radius:4px;margin:4px 0}"
+            + ".model-item span{word-break:break-all;font-size:13px}"
+            + "#chatLog{background:#0a0f1e;border-radius:4px;padding:8px;min-height:120px;max-height:300px;overflow-y:auto;font-size:13px;white-space:pre-wrap}"
+            + ".status{font-size:13px;color:#888;margin:4px 0}"
+            + ".ok{color:#0f0}.err{color:#e94560}.warn{color:#fa0}"
+            + "</style></head><body>"
+            + "<h1>GLMKit 控制面板</h1>"
+
+            // 状态区
+            + "<div class=\"card\"><h2>状态</h2>"
+            + "<div class=\"status\" id=\"status\">加载中...</div>"
+            + "<div class=\"status\" id=\"capturedModel\">当前捕获模型: 加载中...</div>"
+            + "<div class=\"row\"><button class=\"success\" onclick=\"captureModel()\">📥 捕获当前模型</button></div>"
+            + "</div>"
+
+            // 模型列表
+            + "<div class=\"card\"><h2>模型列表</h2>"
+            + "<div id=\"modelList\"></div>"
+            + "<div class=\"row\" style=\"margin-top:8px\">"
+            + "<input id=\"newModel\" placeholder=\"手动输入模型 ID\">"
+            + "<button onclick=\"addModel()\">➕ 添加</button>"
+            + "</div></div>"
+
+            // 聊天测试
+            + "<div class=\"card\"><h2>聊天测试</h2>"
+            + "<div class=\"row\"><input id=\"chatModel\" placeholder=\"模型 ID（留空用第一个）\"></div>"
+            + "<textarea id=\"chatInput\" placeholder=\"输入消息...\" rows=\"3\"></textarea>"
+            + "<div class=\"row\" style=\"margin-top:6px\">"
+            + "<button onclick=\"sendChat()\">📤 发送</button>"
+            + "<button onclick=\"document.getElementById('chatLog').innerHTML=''\">🗑️ 清空</button>"
+            + "</div>"
+            + "<div id=\"chatLog\" style=\"margin-top:8px\"></div>"
+            + "</div>"
+
+            + "<script>"
+            + "const B=document.baseURI.replace(/\\/$/, '');"
+
+            // 加载状态
+            + "function loadStatus(){"
+            + "fetch(B+'/healthz').then(r=>r.json()).then(d=>{"
+            + "document.getElementById('status').innerHTML="
+            + "'网关: <span class=ok>'+(d.running?'运行中':'已停止')+'</span>'"
+            + "' | 端口: '+d.endpoint"
+            + "' | 后端: '+(d.backendReady?'<span class=ok>就绪</span>':'<span class=err>未就绪</span>');"
+            + "}).catch(e=>{document.getElementById('status').innerHTML='<span class=err>无法连接网关</span>';});"
+
+            + "fetch(B+'/v1/diagnostic').then(r=>r.json()).then(d=>{"
+            + "let cm=d.captured_model||'';"
+            + "document.getElementById('capturedModel').innerHTML="
+            + "'当前捕获模型: '+(cm?'<span class=ok>'+cm+'</span>':'<span class=warn>未捕获</span>');"
+            + "}).catch(e=>{});"
+
+            + "loadModels();"
+            + "}"
+
+            // 加载模型列表
+            + "function loadModels(){"
+            + "fetch(B+'/v1/models').then(r=>r.json()).then(d=>{"
+            + "let el=document.getElementById('modelList');"
+            + "if(!d.data||d.data.length===0){el.innerHTML='<div class=status>暂无模型，点击上方捕获按钮添加</div>';return;}"
+            + "el.innerHTML=d.data.map(m=>"
+            + "'<div class=model-item><span>'+m.id+'</span>"
+            + "<button class=danger onclick=\\'delModel(\"'+m.id+'\")\\'>删除</button></div>'"
+            + ").join('');"
+            + "}).catch(e=>{document.getElementById('modelList').innerHTML='<span class=err>加载失败</span>';});"
+            + "}"
+
+            // 捕获模型
+            + "function captureModel(){"
+            + "fetch(B+'/v1/models/capture',{method:'POST'}).then(r=>r.json()).then(d=>{"
+            + "alert(d.message||'操作完成');loadStatus();"
+            + "}).catch(e=>{alert('捕获失败: '+e);});"
+            + "}"
+
+            // 添加模型
+            + "function addModel(){"
+            + "let m=document.getElementById('newModel').value.trim();"
+            + "if(!m)return;"
+            + "fetch(B+'/v1/models/add',{method:'POST',headers:{'Content-Type':'application/json'},"
+            + "body:JSON.stringify({model:m})}).then(r=>r.json()).then(d=>{"
+            + "alert(d.message||'操作完成');document.getElementById('newModel').value='';loadModels();"
+            + "}).catch(e=>{alert('添加失败: '+e);});"
+            + "}"
+
+            // 删除模型
+            + "function delModel(m){"
+            + "if(!confirm('确认删除模型: '+m+'?'))return;"
+            + "fetch(B+'/v1/models/delete',{method:'POST',headers:{'Content-Type':'application/json'},"
+            + "body:JSON.stringify({model:m})}).then(r=>r.json()).then(d=>{"
+            + "alert(d.message||'操作完成');loadModels();"
+            + "}).catch(e=>{alert('删除失败: '+e);});"
+            + "}"
+
+            // 发送聊天
+            + "function sendChat(){"
+            + "let msg=document.getElementById('chatInput').value.trim();"
+            + "if(!msg)return;"
+            + "let model=document.getElementById('chatModel').value.trim();"
+            + "let log=document.getElementById('chatLog');"
+            + "log.innerHTML+='<span class=warn>我: </span>'+msg+'\\n';"
+            + "let btn=event.target;btn.disabled=true;btn.textContent='发送中...';"
+            + "fetch(B+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},"
+            + "body:JSON.stringify({model:model||undefined,messages:[{role:'user',content:msg}],stream:false})})"
+            + ".then(r=>r.json()).then(d=>{"
+            + "if(d.error){log.innerHTML+='<span class=err>错误: '+d.error.message+'</span>\\n';}"
+            + "else if(d.choices&&d.choices[0]){log.innerHTML+='<span class=ok>AI: </span>'+d.choices[0].message.content+'\\n';}"
+            + "else{log.innerHTML+='<span class=err>未知响应: '+JSON.stringify(d)+'</span>\\n';}"
+            + "}).catch(e=>{log.innerHTML+='<span class=err>请求失败: '+e+'</span>\\n';})"
+            + ".finally(()=>{btn.disabled=false;btn.textContent='📤 发送';});"
+            + "}"
+
+            + "loadStatus();setInterval(loadStatus,5000);"
+            + "</script></body></html>";
     }
 
     private static void sendResponse(OutputStream os, int status, String reason,
