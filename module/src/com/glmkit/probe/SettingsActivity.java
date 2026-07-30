@@ -567,13 +567,14 @@ public final class SettingsActivity extends Activity {
         new Thread(() -> {
             StringBuilder report = new StringBuilder();
             try {
-                int port = getSavedPort();
+                int savedPort = getSavedPort();
                 String apiKey = getPrefs().getString(KEY_API_KEY, null);
-                report.append("配置端口: ").append(port).append('\n');
+                report.append("配置端口: ").append(savedPort).append('\n');
 
-                LocalApiGateway.setListenPort(port);
+                LocalApiGateway.setListenPort(savedPort);
                 LocalApiGateway.setApiKey(apiKey);
 
+                int port;
                 if (!LocalApiGateway.isRunning()) {
                     report.append("网关未运行，正在启动...\n");
                     GlmCapture capture = new GlmCapture();
@@ -582,24 +583,59 @@ public final class SettingsActivity extends Activity {
                     GlmBackend backend = new GlmBackend(capture);
                     port = LocalApiGateway.start(this, backend);
                     report.append("start()返回端口: ").append(port).append('\n');
-                    report.append("isRunning(): ").append(LocalApiGateway.isRunning()).append('\n');
                 } else {
-                    report.append("网关已在运行\n");
+                    port = LocalApiGateway.getListenPort();
+                    report.append("网关已在运行，端口: ").append(port).append('\n');
                 }
 
-                final int finalPort = port;
-                try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
-                String result = httpGet("http://127.0.0.1:" + finalPort + "/healthz", 2000);
-                report.append("healthz: ").append(result != null ? "OK" : "FAIL").append('\n');
+                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+
+                // 全面状态检查
+                report.append("isRunning(): ").append(LocalApiGateway.isRunning()).append('\n');
+                report.append("getListenPort(): ").append(LocalApiGateway.getListenPort()).append('\n');
+                report.append("getEffectiveGatewayPort(): ").append(getEffectiveGatewayPort()).append('\n');
+
+                // 尝试多个端口的 healthz
+                String result8765 = httpGet("http://127.0.0.1:" + savedPort + "/healthz", 2000);
+                report.append("healthz@").append(savedPort).append(": ").append(result8765 != null ? "OK" : "FAIL").append('\n');
+
+                String resultPort = null;
+                if (port != savedPort) {
+                    resultPort = httpGet("http://127.0.0.1:" + port + "/healthz", 2000);
+                    report.append("healthz@").append(port).append(": ").append(resultPort != null ? "OK" : "FAIL").append('\n');
+                }
+
+                // 用成功的那个端口
+                final int finalPort;
+                final String finalResult;
+                if (resultPort != null) {
+                    finalPort = port;
+                    finalResult = resultPort;
+                } else if (result8765 != null) {
+                    finalPort = savedPort;
+                    finalResult = result8765;
+                } else {
+                    finalPort = port;
+                    finalResult = null;
+                }
+
+                // 额外尝试 getEffectiveGatewayPort
+                int effPort = getEffectiveGatewayPort();
+                if (effPort != finalPort) {
+                    String effResult = httpGet("http://127.0.0.1:" + effPort + "/healthz", 2000);
+                    report.append("healthz@").append(effPort).append("(eff): ").append(effResult != null ? "OK" : "FAIL").append('\n');
+                }
 
                 runOnUiThread(() -> {
-                    if (result != null) {
+                    if (finalResult != null) {
                         Toast.makeText(this, "✅ 网关已启动 (端口 " + finalPort + ")",
                                 Toast.LENGTH_LONG).show();
+                        diagResultText.setText("✅ 网关运行中 (端口 " + finalPort + ")\n\n" + report);
+                        diagResultText.setTextColor(0xFF388E3C);
+                        diagResultText.setVisibility(View.VISIBLE);
                         keepAliveSwitch.setChecked(true);
                         saveKeepAlive(true);
                     } else {
-                        // 显示详细诊断信息
                         String logs = LocalApiGateway.getLogBufferText();
                         String diag = "⚠️ 网关启动失败\n" + report + "\n日志:\n" + logs;
                         diagResultText.setText(diag);
@@ -611,7 +647,6 @@ public final class SettingsActivity extends Activity {
                     refreshStatus();
                 });
 
-                // 同时尝试启动前台 Service（用于后台保活，失败不影响网关）
                 try { LocalApiKeepAliveService.setEnabled(this, true); } catch (Throwable ignored) {}
 
             } catch (Throwable t) {
@@ -717,13 +752,29 @@ public final class SettingsActivity extends Activity {
         final int configuredPort = getSavedPort();
         new Thread(() -> {
             String result = httpGet("http://127.0.0.1:" + port + "/healthz", 2000);
-            runOnUiThread(() -> {
-                if (result != null) {
-                    String msg = "本地网关：✅ 监听中 (端口 " + port + ")";
-                    if (port != configuredPort) {
-                        msg += "\n⚠️ 端口已回退（配置: " + configuredPort + "）";
+            // 如果有效端口失败，尝试配置端口
+            if (result == null && port != configuredPort) {
+                result = httpGet("http://127.0.0.1:" + configuredPort + "/healthz", 2000);
+            }
+            // 也尝试 8765-8775 范围扫描
+            if (result == null) {
+                for (int p = 8765; p <= 8775; p++) {
+                    String r = httpGet("http://127.0.0.1:" + p + "/healthz", 500);
+                    if (r != null) {
+                        result = r;
+                        final int foundPort = p;
+                        runOnUiThread(() -> {
+                            gatewayStatus.setText("本地网关：✅ 监听中 (端口 " + foundPort + ")");
+                            gatewayStatus.setTextColor(0xFF388E3C);
+                        });
+                        return;
                     }
-                    gatewayStatus.setText(msg);
+                }
+            }
+            final String finalResult = result;
+            runOnUiThread(() -> {
+                if (finalResult != null) {
+                    gatewayStatus.setText("本地网关：✅ 监听中 (端口 " + port + ")");
                     gatewayStatus.setTextColor(0xFF388E3C);
                 } else {
                     gatewayStatus.setText("本地网关：⚠️ 未运行（请点击「启动网关」）");
@@ -743,12 +794,21 @@ public final class SettingsActivity extends Activity {
         diagResultText.setVisibility(View.VISIBLE);
         new Thread(() -> {
             String result = httpGet("http://127.0.0.1:" + port + "/v1/diagnostic", 4000);
+            int[] foundPort = {port};
+            if (result == null) {
+                for (int p = 8765; p <= 8775; p++) {
+                    if (p == port) continue;
+                    String r = httpGet("http://127.0.0.1:" + p + "/v1/diagnostic", 1000);
+                    if (r != null) { result = r; foundPort[0] = p; break; }
+                }
+            }
+            final String finalResult = result;
             runOnUiThread(() -> {
-                if (result == null) {
+                if (finalResult == null) {
                     diagResultText.setText("❌ 连接失败\n\n请点击「▶ 启动网关」按钮");
                     diagResultText.setTextColor(0xFFF44336);
                 } else {
-                    diagResultText.setText("✅ 网关响应：\n\n" + result);
+                    diagResultText.setText("✅ 网关响应 (端口 " + foundPort[0] + ")：\n\n" + finalResult);
                     diagResultText.setTextColor(0xFF388E3C);
                 }
             });
@@ -765,12 +825,21 @@ public final class SettingsActivity extends Activity {
         diagResultText.setVisibility(View.VISIBLE);
         new Thread(() -> {
             String result = httpGet("http://127.0.0.1:" + port + "/v1/models", 4000);
+            int[] foundPort = {port};
+            if (result == null) {
+                for (int p = 8765; p <= 8775; p++) {
+                    if (p == port) continue;
+                    String r = httpGet("http://127.0.0.1:" + p + "/v1/models", 1000);
+                    if (r != null) { result = r; foundPort[0] = p; break; }
+                }
+            }
+            final String finalResult = result;
             runOnUiThread(() -> {
-                if (result == null) {
+                if (finalResult == null) {
                     diagResultText.setText("❌ 连接失败\n\n请点击「▶ 启动网关」按钮");
                     diagResultText.setTextColor(0xFFF44336);
                 } else {
-                    diagResultText.setText("✅ 模型列表：\n\n" + result);
+                    diagResultText.setText("✅ 模型列表 (端口 " + foundPort[0] + ")：\n\n" + finalResult);
                     diagResultText.setTextColor(0xFF388E3C);
                 }
             });
