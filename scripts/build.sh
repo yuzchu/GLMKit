@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MODULE_DIR="${PROJECT_DIR}/module"
 BUILD_DIR="${PROJECT_DIR}/build"
-APK_NAME="glmkit-v1.0.55.apk"
+APK_NAME="glmkit-v1.0.56.apk"
 
 # ── Android SDK 路径 ──────────────────────────────────────────
 ANDROID_JAR="${ANDROID_JAR:-}"
@@ -116,7 +116,7 @@ if [[ ! -f "${KEYSTORE}" ]]; then
     -keyalg RSA -keysize 2048 -validity 10000 2>/dev/null
 fi
 
-SIGNED_APK="${BUILD_DIR}/glmkit-v1.0.55-signed.apk"
+SIGNED_APK="${BUILD_DIR}/glmkit-v1.0.56-signed.apk"
 if [[ -x "${APKSIGNER}" ]]; then
   "${APKSIGNER}" sign --ks "${KEYSTORE}" --ks-pass pass:android --key-pass pass:android \
     --out "${SIGNED_APK}" "${BUILD_DIR}/${APK_NAME}" 2>/dev/null

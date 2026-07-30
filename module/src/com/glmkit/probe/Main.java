@@ -299,6 +299,8 @@ public class Main implements IXposedHookLoadPackage {
                             log("✓✓ 捕获混淆 OkHttpClient (nu.OkHttpClient) — Deekseep 方案 ★★");
                             showToast("GLMKit 已捕获网络层");
                             broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+                            // v1.0.55: 策略0也要安装 RealCall hook（捕获 auth 从 Response.request）
+                            installCaptureInterceptor(param.thisObject, cl);
                         }
                         // 提取请求 URL（用于确定 API 端点）
                         try {
