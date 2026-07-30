@@ -1255,19 +1255,16 @@ public class Main implements IXposedHookLoadPackage {
     private void captureAuthFromResponse(Object response) {
         if (response == null) return;
         // v1.0.57: 跳过网关自身请求的响应，防止 auth 捕获反馈循环
+        // ThreadLocal 标志已足以阻断反馈循环，不需要 response code 检查
         if (GlmCapture.isGatewayRequest()) return;
         try {
-            // v1.0.57: 只从成功响应 (200-299) 捕获 auth，避免从 401 响应捕获过期 token
-            // 网关自身请求也经过此 hook，如果网关请求得到 401，旧代码会捕获过期 auth → 反馈循环
+            // v1.0.58: 记录 response code 用于诊断，但从所有响应捕获 auth
+            // （APP 的 401 响应可能携带最新 auth 头，跳过会导致 auth 完全无法捕获）
             int responseCode = -1;
             try {
                 Method codeMethod = response.getClass().getMethod("code");
                 responseCode = (Integer) codeMethod.invoke(response);
             } catch (Throwable ignored) {}
-            if (responseCode < 200 || responseCode >= 300) {
-                // 非成功响应，不捕获 auth（避免过期 token 覆盖有效 token）
-                return;
-            }
 
             // okhttp3.Response.request() → nu.Request (最终请求，含 auth)
             Method requestMethod = response.getClass().getMethod("request");
