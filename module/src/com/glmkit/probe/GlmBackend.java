@@ -83,6 +83,13 @@ public class GlmBackend implements LocalApiGateway.Backend {
 
         lastError = null;
 
+        // v1.0.41: 若 auth 未就绪，尝试从共享文件加载
+        if (!isReady()) {
+            log("auth 未就绪，尝试从共享文件加载...");
+            boolean loaded = capture.loadFromSharedFile();
+            log("从共享文件加载 auth: " + (loaded ? "成功" : "失败"));
+        }
+
         // 构造 GLM API 请求体
         JSONObject glmReq = buildGlmRequestBody(req);
         String bodyStr = glmReq.toString();

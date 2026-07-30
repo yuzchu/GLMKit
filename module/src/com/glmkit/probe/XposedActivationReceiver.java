@@ -25,6 +25,7 @@ public final class XposedActivationReceiver extends BroadcastReceiver {
 
     public static final String ACTION_HOOK_STARTED   = "com.glmkit.proxy.HOOK_STARTED";
     public static final String ACTION_HOOK_SUCCESS   = "com.glmkit.proxy.HOOK_SUCCESS";
+    public static final String ACTION_AUTH_CAPTURED  = "com.glmkit.proxy.AUTH_CAPTURED";
     public static final String ACTION_GATEWAY_STARTED = "com.glmkit.proxy.GATEWAY_STARTED";
 
     @Override public void onReceive(Context context, Intent intent) {
@@ -49,6 +50,14 @@ public final class XposedActivationReceiver extends BroadcastReceiver {
                       .putLong("auth_captured_at", System.currentTimeMillis())
                       .apply();
                 Log.i(TAG, "认证信息已捕获");
+                break;
+
+            case ACTION_AUTH_CAPTURED:
+                // v1.0.41: 模块已将 auth 写入 /sdcard/glmkit_auth.json
+                editor.putBoolean("auth_captured", true)
+                      .putLong("auth_captured_at", System.currentTimeMillis())
+                      .apply();
+                Log.i(TAG, "认证信息已捕获（从共享文件）");
                 break;
 
             case ACTION_GATEWAY_STARTED:

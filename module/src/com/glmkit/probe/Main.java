@@ -1,14 +1,9 @@
 package com.glmkit.probe;
 
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.PowerManager;
 import android.widget.Toast;
 
 import java.io.File;
@@ -30,7 +25,6 @@ import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
-import de.robv.android.xposed.XSharedPreferences;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
@@ -75,9 +69,8 @@ public class Main implements IXposedHookLoadPackage {
     private static volatile PrintWriter logWriter = null;
     private static final SimpleDateFormat logDateFormat =
             new SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US);
-    private static volatile PowerManager.WakeLock wakeLock = null;
 
-    private static final AtomicBoolean gatewayStarted = new AtomicBoolean(false);
+    private static final AtomicBoolean moduleNotified = new AtomicBoolean(false);
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
@@ -121,7 +114,7 @@ public class Main implements IXposedHookLoadPackage {
                                 appContext = (Context) param.thisObject;
                                 log("✓ Application.attachBaseContext — 获取 Context");
                             }
-                            tryStartGateway();
+                            notifyModuleLoaded();
                         } catch (Throwable t) {
                             log("attachBaseContext hook 异常: " + t.getMessage());
                         }
@@ -148,7 +141,7 @@ public class Main implements IXposedHookLoadPackage {
                                 appContext = ((android.app.Activity) param.thisObject).getApplicationContext();
                                 log("✓ Activity.onCreate — 获取 Context (兜底入口)");
                             }
-                            tryStartGateway();
+                            notifyModuleLoaded();
                         } catch (Throwable t) {
                             log("Activity.onCreate hook 异常: " + t.getMessage());
                         }
@@ -161,12 +154,20 @@ public class Main implements IXposedHookLoadPackage {
     }
 
     /** 尝试启动网关（确保只启动一次） */
-    private void tryStartGateway() {
-        if (gatewayStarted.compareAndSet(false, true)) {
-            log(">>> 首次获取 Context，启动网关 <<<");
+    /**
+     * v1.0.41: 模块不再启动网关。只通知 GLMKit APP 模块已加载。
+     * 网关由 GLMKit APP 的 LocalApiKeepAliveService 在自身进程中启动。
+     */
+    private void notifyModuleLoaded() {
+        if (moduleNotified.compareAndSet(false, true)) {
+            log(">>> 模块已加载，通知 GLMKit APP <<<");
             showToast("GLMKit 已注入智谱清言");
             broadcastActivation("com.glmkit.proxy.HOOK_STARTED");
-            startGatewayWhenReady();
+
+            // 初始化日志文件
+            if (appContext != null) {
+                initLogFile(appContext);
+            }
         }
     }
 
@@ -185,7 +186,7 @@ public class Main implements IXposedHookLoadPackage {
                                 appContext = (Context) param.thisObject;
                                 log("✓ Application.onCreate — 获取 Context");
                             }
-                            tryStartGateway();
+                            notifyModuleLoaded();
                         } catch (Throwable t) {
                             log("Application.onCreate hook 异常: " + t.getMessage());
                         }
@@ -592,16 +593,15 @@ public class Main implements IXposedHookLoadPackage {
                             if ("authorization".equals(ln)) {
                                 getCapture().setAuthToken(value);
                                 log("捕获 Authorization (HttpURLConnection)");
-                                showToast("GLMKit 已捕获认证信息");
-                                broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+                                saveAuthAndNotify();
                             } else if (ln.contains("token") || ln.contains("api-key") || ln.contains("apikey")) {
                                 getCapture().setApiKey(value);
                                 log("捕获 API Key (HttpURLConnection)");
-                                showToast("GLMKit 已捕获认证信息");
-                                broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+                                saveAuthAndNotify();
                             } else if (ln.contains("cookie")) {
                                 getCapture().setCookie(value);
                                 log("捕获 Cookie (HttpURLConnection)");
+                                saveAuthAndNotify();
                             }
                         } catch (Throwable ignored) {}
                     }
@@ -823,18 +823,25 @@ public class Main implements IXposedHookLoadPackage {
         if (name == null || value == null) return;
         String ln = name.toLowerCase();
 
+        boolean authChanged = false;
         if ("authorization".equals(ln)) {
             getCapture().setAuthToken(value);
             log("捕获 Authorization 头");
-            showToast("GLMKit 已捕获认证信息");
+            authChanged = true;
         } else if (ln.contains("token") || ln.contains("api-key") || ln.contains("apikey")) {
             getCapture().setApiKey(value);
             log("捕获 API Key 头: " + name);
+            authChanged = true;
         } else if (ln.contains("cookie")) {
             getCapture().setCookie(value);
             log("捕获 Cookie 头");
+            authChanged = true;
         } else if ("x-device-id".equals(ln) || ln.contains("device")) {
             getCapture().setDeviceId(value);
+        }
+
+        if (authChanged) {
+            saveAuthAndNotify();
         }
     }
 
@@ -850,86 +857,36 @@ public class Main implements IXposedHookLoadPackage {
     }
 
     // ════════════════════════════════════════════════════════════
-    //  网关启动
+    //  v1.0.41: 保存 auth 到共享文件 + 通知 GLMKit APP
     // ════════════════════════════════════════════════════════════
-    private void startGatewayWhenReady() {
-        new Thread(() -> {
-            try {
-                log(">>> startGatewayWhenReady 开始 <<<");
+    private static final AtomicBoolean authSaved = new AtomicBoolean(false);
 
-                // 初始化日志文件
-                if (appContext != null) {
-                    initLogFile(appContext);
-                    log("日志文件初始化完成: " + getLogFilePath());
-                } else {
-                    log("⚠️ appContext 为空！");
-                    return;
-                }
+    /**
+     * 将捕获的 auth 信息写入 /sdcard/glmkit_auth.json 并广播通知 GLMKit APP。
+     * 网关运行在 GLMKit APP 进程中，通过此文件获取 auth。
+     */
+    void saveAuthAndNotify() {
+        GlmCapture cap = getCapture();
+        if (cap.getBestAuth() == null) return;
 
-                Context ctx = appContext.getApplicationContext();
-                log("获取 ApplicationContext: " + (ctx != null ? "成功" : "失败"));
-                if (ctx == null) {
-                    log("⚠️ ApplicationContext 为空！");
-                    return;
-                }
+        boolean saved = cap.saveToSharedFile();
+        log("auth 写入共享文件: " + (saved ? "成功" : "失败") + " → " + GlmCapture.SHARED_AUTH_FILE);
 
-                int port = 8765;
-                try {
-                    XSharedPreferences xPrefs = new XSharedPreferences("com.glmkit.proxy", "glmkit_settings");
-                    xPrefs.reload();
-                    xPrefs.makeReadable();
-                    port = xPrefs.getInt("port", 8765);
-                    LocalApiGateway.setListenPort(port);
-                    String apiKey = xPrefs.getString("api_key", null);
-                    LocalApiGateway.setApiKey(apiKey);
-                    log("配置监听端口: " + port + " (从模块偏好读取)");
-                    log("API Key 验证: " + (apiKey != null && !apiKey.isEmpty() ? "已启用" : "未启用"));
-                } catch (Throwable t) {
-                    log("读取配置失败（使用默认值）: " + t.getMessage());
-                }
-
-                log("正在启动网关...");
-                GlmBackend backend = new GlmBackend(getCapture());
-                int actualPort = LocalApiGateway.start(ctx, backend);
-                log("LocalApiGateway.start 返回端口: " + actualPort);
-
-                if (!LocalApiGateway.isRunning()) {
-                    log("✗ 网关启动失败，所有端口均被占用");
-                    showToast("GLMKit 网关启动失败（端口被占用）");
-                    return;
-                }
-
-                log("✓✓✓ 本地 API 网关已启动，实际端口: " + actualPort + " ✓✓✓");
-                showToast("GLMKit 网关已启动，端口: " + actualPort);
-
-                // 启动前台通知保活 — 防止切换应用时进程被杀死
-                startForegroundKeepAlive(ctx);
-
-                Intent gatewayIntent = new Intent("com.glmkit.proxy.GATEWAY_STARTED");
-                gatewayIntent.setPackage("com.glmkit.proxy");
-                gatewayIntent.putExtra("port", actualPort);
-                try {
-                    ctx.sendBroadcast(gatewayIntent);
-                    log("发送网关启动广播");
-                } catch (Throwable t) {
-                    log("发送广播失败: " + t.getMessage());
-                }
-
-                // 添加关闭钩子，记录进程退出
-                Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                    log("⚠️⚠️⚠️ 进程即将退出（shutdown hook）⚠️⚠️⚠️");
-                    if (wakeLock != null && wakeLock.isHeld()) {
-                        try { wakeLock.release(); } catch (Throwable ignored) {}
-                    }
-                }, "glmkit-shutdown-hook"));
-
-                log(">>> 网关启动流程完成 <<<");
-
-            } catch (Throwable t) {
-                log("启动网关失败: " + t.getMessage());
-                log(java.util.Arrays.toString(t.getStackTrace()));
+        // 广播通知 GLMKit APP
+        try {
+            Intent intent = new Intent("com.glmkit.proxy.AUTH_CAPTURED");
+            intent.setPackage("com.glmkit.proxy");
+            if (appContext != null) {
+                appContext.sendBroadcast(intent);
+                log("发送 AUTH_CAPTURED 广播");
             }
-        }, "glmkit-gateway-init").start();
+        } catch (Throwable t) {
+            log("发送 AUTH_CAPTURED 广播失败: " + t.getMessage());
+        }
+
+        if (authSaved.compareAndSet(false, true)) {
+            showToast("GLMKit 已捕获认证信息");
+        }
     }
 
     // ════════════════════════════════════════════════════════════
@@ -1040,83 +997,6 @@ public class Main implements IXposedHookLoadPackage {
     /** 获取日志文件路径（用于诊断） */
     static String getLogFilePath() {
         return logFile != null ? logFile.getAbsolutePath() : "未初始化";
-    }
-
-    /** 启动前台通知保活 — 防止目标应用进程被系统杀死 */
-    static void startForegroundKeepAlive(Context ctx) {
-        if (ctx == null) return;
-        try {
-            // 使用 WakeLock 防止 CPU 休眠
-            if (wakeLock == null) {
-                PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
-                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GLMKit:gateway");
-                wakeLock.setReferenceCounted(false);
-                wakeLock.acquire();
-                log("已获取 WakeLock (PARTIAL_WAKE_LOCK)");
-            }
-
-            // 显示常驻通知（提高进程优先级，减少被杀概率）
-            String channelId = "glmkit_gateway";
-            NotificationManager nm = (NotificationManager)
-                    ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                NotificationChannel channel = new NotificationChannel(
-                        channelId, "GLMKit 网关",
-                        NotificationManager.IMPORTANCE_LOW);
-                channel.setDescription("本地 API 网关运行中");
-                channel.setShowBadge(false);
-                nm.createNotificationChannel(channel);
-            }
-
-            Notification notification;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                notification = new Notification.Builder(ctx, channelId)
-                        .setContentTitle("GLMKit 网关运行中")
-                        .setContentText("本地 API 反代服务正在运行 (端口 " + LocalApiGateway.getListenPort() + ")")
-                        .setSmallIcon(android.R.drawable.ic_dialog_info)
-                        .setOngoing(true)
-                        .build();
-            } else {
-                notification = new Notification.Builder(ctx)
-                        .setContentTitle("GLMKit 网关运行中")
-                        .setContentText("本地 API 反代服务正在运行 (端口 " + LocalApiGateway.getListenPort() + ")")
-                        .setSmallIcon(android.R.drawable.ic_dialog_info)
-                        .setOngoing(true)
-                        .build();
-            }
-
-            nm.notify(1, notification);
-            log("已显示常驻通知（提高进程优先级）");
-
-            // 启动一个后台线程定期检查网关状态，保持进程活跃
-            new Thread(() -> {
-                while (LocalApiGateway.isRunning()) {
-                    try {
-                        Thread.sleep(30_000); // 每 30 秒检查一次
-                        if (LocalApiGateway.isRunning()) {
-                            log("保活心跳: 网关运行中, 连接数=" +
-                                    LocalApiGateway.connectionInfo());
-                        }
-                    } catch (InterruptedException e) {
-                        break;
-                    } catch (Throwable t) {
-                        log("保活心跳异常: " + t.getMessage());
-                    }
-                }
-                log("保活心跳线程退出（网关已停止）");
-                // 释放 WakeLock
-                if (wakeLock != null && wakeLock.isHeld()) {
-                    try { wakeLock.release(); } catch (Throwable ignored) {}
-                    log("已释放 WakeLock");
-                }
-                // 取消通知
-                try { nm.cancel(1); } catch (Throwable ignored) {}
-            }, "glmkit-keepalive-heartbeat").start();
-
-        } catch (Throwable t) {
-            log("前台保活启动失败: " + t.getMessage());
-        }
     }
 
     static void showToast(final String msg) {

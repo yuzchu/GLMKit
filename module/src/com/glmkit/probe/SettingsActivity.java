@@ -314,10 +314,19 @@ public final class SettingsActivity extends Activity {
         gwCtrlRow.setGravity(Gravity.CENTER);
         gwCtrlRow.setPadding(0, 8, 0, 8);
 
+        Button startGwBtn = new Button(this);
+        startGwBtn.setText("▶ 启动网关");
+        startGwBtn.setOnClickListener(v -> startGateway());
+        gwCtrlRow.addView(startGwBtn);
+
         Button stopGwBtn = new Button(this);
         stopGwBtn.setText("⏹ 停止网关");
         stopGwBtn.setOnClickListener(v -> stopGateway());
-        gwCtrlRow.addView(stopGwBtn);
+        LinearLayout.LayoutParams sgParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        sgParams.leftMargin = 16;
+        gwCtrlRow.addView(stopGwBtn, sgParams);
 
         Button restartGwBtn = new Button(this);
         restartGwBtn.setText("🔄 重启网关");
@@ -330,8 +339,9 @@ public final class SettingsActivity extends Activity {
         root.addView(gwCtrlRow);
 
         TextView gwCtrlDesc = new TextView(this);
-        gwCtrlDesc.setText("停止：立即关闭本地 API 网关\n"
-                + "重启：重新加载配置（端口、API Key）并启动网关");
+        gwCtrlDesc.setText("启动：在 GLMKit 进程中启动网关（前台 Service 保活）\n"
+                + "停止：关闭网关并停止 Service\n"
+                + "重启：停止后重新启动（重新加载端口、API Key）");
         gwCtrlDesc.setTextSize(12f);
         gwCtrlDesc.setTextColor(0xFF666666);
         gwCtrlDesc.setPadding(16, 0, 0, 16);
@@ -533,37 +543,51 @@ public final class SettingsActivity extends Activity {
     }
 
     /**
-     * 停止网关 — 发送 POST /shutdown 到本地网关
+     * v1.0.41: 启动网关 — 启动前台 Service（在 GLMKit APP 自身进程中运行网关）
      */
-    private void stopGateway() {
-        final int port = getEffectiveGatewayPort();
-        Toast.makeText(this, "正在停止网关...", Toast.LENGTH_SHORT).show();
-        new Thread(() -> {
-            String result = httpPost("http://127.0.0.1:" + port + "/shutdown", 3000);
-            runOnUiThread(() -> {
-                if (result != null) {
-                    Toast.makeText(this, "✅ 网关已停止", Toast.LENGTH_SHORT).show();
-                } else {
-                    Toast.makeText(this, "⚠️ 网关可能未运行", Toast.LENGTH_SHORT).show();
-                }
-                refreshStatus();
-            });
-        }, "glmkit-shutdown").start();
+    private void startGateway() {
+        boolean ok = LocalApiKeepAliveService.setEnabled(this, true);
+        if (ok) {
+            Toast.makeText(this, "正在启动网关...", Toast.LENGTH_SHORT).show();
+            keepAliveSwitch.setChecked(true);
+            saveKeepAlive(true);
+        } else {
+            Toast.makeText(this, "⚠️ 启动失败", Toast.LENGTH_SHORT).show();
+        }
+        refreshStatus();
     }
 
     /**
-     * 重启网关 — 发送 POST /restart 到本地网关
+     * v1.0.41: 停止网关 — 停止前台 Service
+     */
+    private void stopGateway() {
+        boolean ok = LocalApiKeepAliveService.setEnabled(this, false);
+        if (ok) {
+            Toast.makeText(this, "✅ 网关已停止", Toast.LENGTH_SHORT).show();
+            keepAliveSwitch.setChecked(false);
+            saveKeepAlive(false);
+        } else {
+            Toast.makeText(this, "⚠️ 停止失败", Toast.LENGTH_SHORT).show();
+        }
+        refreshStatus();
+    }
+
+    /**
+     * v1.0.41: 重启网关 — 停止后重新启动 Service
      */
     private void restartGateway() {
-        final int port = getEffectiveGatewayPort();
         Toast.makeText(this, "正在重启网关...", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
-            String result = httpPost("http://127.0.0.1:" + port + "/restart", 5000);
+            LocalApiKeepAliveService.setEnabled(this, false);
+            try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+            boolean ok = LocalApiKeepAliveService.setEnabled(this, true);
             runOnUiThread(() -> {
-                if (result != null) {
-                    Toast.makeText(this, "✅ 网关已重启\n" + result, Toast.LENGTH_LONG).show();
+                if (ok) {
+                    Toast.makeText(this, "✅ 网关已重启", Toast.LENGTH_SHORT).show();
+                    keepAliveSwitch.setChecked(true);
+                    saveKeepAlive(true);
                 } else {
-                    Toast.makeText(this, "⚠️ 重启失败，请尝试打开智谱清言", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, "⚠️ 重启失败", Toast.LENGTH_SHORT).show();
                 }
                 refreshStatus();
             });
@@ -616,7 +640,7 @@ public final class SettingsActivity extends Activity {
                     gatewayStatus.setText(msg);
                     gatewayStatus.setTextColor(0xFF388E3C);
                 } else {
-                    gatewayStatus.setText("本地网关：⚠️ 未运行（请打开智谱清言）");
+                    gatewayStatus.setText("本地网关：⚠️ 未运行（请点击「启动网关」）");
                     gatewayStatus.setTextColor(0xFFFF6600);
                 }
             });
