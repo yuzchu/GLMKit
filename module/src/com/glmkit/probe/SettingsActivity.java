@@ -482,7 +482,7 @@ public final class SettingsActivity extends Activity {
         View apiViewChild = findViewByTag(rootView(), "api_url");
         if (apiViewChild instanceof TextView) {
             ((TextView) apiViewChild).setText(
-                    "http://127.0.0.1:" + getSavedPort() + "/v1/chat/completions");
+                    "http://127.0.0.1:" + getEffectiveGatewayPort() + "/v1/chat/completions");
         }
 
         // 更新使用说明中的端口号
@@ -494,7 +494,7 @@ public final class SettingsActivity extends Activity {
                   + "3. 重启智谱清言（或重启设备）\n"
                   + "4. 打开智谱清言并登录，模块将自动捕获认证信息\n"
                   + "5. 使用以下地址作为 OpenAI 兼容 API 端点：\n"
-                  + "   http://127.0.0.1:" + getSavedPort() + "/v1\n\n"
+                  + "   http://127.0.0.1:" + getEffectiveGatewayPort() + "/v1\n\n"
                   + "API Key（可选）：\n"
                   + "  设置后请求需携带 Authorization: Bearer <key>\n"
                   + "  留空则不验证，修改后需「重启网关」生效\n\n"
@@ -701,10 +701,9 @@ public final class SettingsActivity extends Activity {
      * 因为端口被占用时网关会回退到备用端口。
      */
     private int getEffectiveGatewayPort() {
-        SharedPreferences prefs = getPrefs();
-        if (prefs.getBoolean("gateway_running", false)) {
-            int gwPort = prefs.getInt("gateway_port", 0);
-            if (gwPort >= 1024 && gwPort <= 65535) return gwPort;
+        // 网关在同一进程中运行，直接获取实际监听端口
+        if (LocalApiGateway.isRunning()) {
+            return LocalApiGateway.getListenPort();
         }
         return getSavedPort();
     }
