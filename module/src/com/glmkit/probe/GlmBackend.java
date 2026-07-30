@@ -37,8 +37,9 @@ public class GlmBackend implements LocalApiGateway.Backend {
 
     @Override
     public boolean isReady() {
-        // 放宽条件：不需要 OkHttp client，只要有 auth 就行
-        // 网关可以用 HttpURLConnection 发请求
+        // v1.0.49 Deekseep 方案：OkHttpClient 捕获即就绪（auth 由 client 拦截器处理）
+        if (capture.getOkHttpClient() != null) return true;
+        // 兜底：auth 捕获即可用 HttpURLConnection 发请求
         return capture.getBestAuth() != null;
     }
 
@@ -52,7 +53,8 @@ public class GlmBackend implements LocalApiGateway.Backend {
     @Override
     public String readinessDetail() {
         StringBuilder sb = new StringBuilder();
-        sb.append("client=").append(capture.getOkHttpClient() != null ? "yes" : "no(fallback)");
+        sb.append("client=").append(capture.getOkHttpClient() != null ?
+            capture.getOkHttpClient().getClass().getName() : "no(fallback)");
         sb.append(", baseUrl=").append(capture.getBestBaseUrl() != null ? "yes" : "no");
         sb.append(", auth=").append(capture.getBestAuth() != null ? "yes" : "no");
         if (lastError != null) {
@@ -394,9 +396,15 @@ public class GlmBackend implements LocalApiGateway.Backend {
         String clientClassName = client.getClass().getName();
         if (!clientClassName.equals("okhttp3.OkHttpClient")
                 && !clientClassName.equals("com.squareup.okhttp.OkHttpClient")) {
-            // 混淆类 — 无法通过标准类名反射构建请求，直接用 HttpURLConnection
-            log("OkHttp 客户端为混淆类 (" + clientClassName + ")，使用 HttpURLConnection");
-            return executeWithHttpURLConnection(url, body, stream);
+            // v1.0.49: 混淆类 — 使用已知混淆类名构造原生请求 (Deekseep 方案)
+            // 不添加 auth 头 — OkHttpClient 的拦截器自动处理认证
+            try {
+                return executeWithObfuscatedOkHttp(client, url, body, stream);
+            } catch (Throwable t) {
+                lastError = "obfuscated OkHttp failed: " + t.getMessage();
+                log("混淆 OkHttp 请求失败，回退 HttpURLConnection: " + t.getMessage());
+                return executeWithHttpURLConnection(url, body, stream);
+            }
         }
 
         try {
@@ -448,6 +456,80 @@ public class GlmBackend implements LocalApiGateway.Backend {
             log("OkHttp 反射调用失败，回退到 HttpURLConnection: " + t.getMessage());
             return executeWithHttpURLConnection(url, body, stream);
         }
+    }
+
+    /**
+     * v1.0.49: 使用混淆后的 OkHttp 类构造和执行请求 (Deekseep 方案)。
+     *
+     * 智谱清言 v3.7.0 OkHttp 混淆映射:
+     * - nu.OkHttpClient → okhttp3.OkHttpClient, newCall→b
+     * - nu.Request$a → Request.Builder, url→j/g, method→e, build→b
+     * - nu.z → RequestBody, create(MediaType,String)→create(nu.w,String)
+     * - nu.w → MediaType, parse(String)→e(String)
+     * - nu.Call.execute() → okhttp3.Response (Response 类名未混淆!)
+     * - nu.a0 → ResponseBody, string()/byteStream()/close() 方法名未混淆
+     *
+     * 关键：不添加 auth 头！OkHttpClient 的拦截器自动处理认证。
+     */
+    private Object executeWithObfuscatedOkHttp(Object client, String url, String body, boolean stream) throws Exception {
+        ClassLoader cl = client.getClass().getClassLoader();
+
+        // 1. 创建 MediaType: nu.w.e("application/json; charset=utf-8")
+        Class<?> mediaTypeClass = cl.loadClass("nu.w");
+        Object mediaType;
+        try {
+            Method parseMethod = mediaTypeClass.getMethod("e", String.class);
+            mediaType = parseMethod.invoke(null, "application/json; charset=utf-8");
+        } catch (NoSuchMethodException nsme) {
+            Method parseMethod = mediaTypeClass.getMethod("g", String.class);
+            mediaType = parseMethod.invoke(null, "application/json; charset=utf-8");
+        }
+
+        // 2. 创建 RequestBody: nu.z.create(mediaType, bodyString)
+        Class<?> requestBodyClass = cl.loadClass("nu.z");
+        Method createMethod = requestBodyClass.getMethod("create", mediaTypeClass, String.class);
+        Object requestBody = createMethod.invoke(null, mediaType, body);
+
+        // 3. 构建 Request: nu.Request$a (Builder)
+        Class<?> builderClass = cl.loadClass("nu.Request$a");
+        Object builder = builderClass.getDeclaredConstructor().newInstance();
+
+        // 3a. 设置 URL: builder.j(url) 或 builder.g(url)
+        try {
+            Method urlMethod = builderClass.getMethod("j", String.class);
+            urlMethod.invoke(builder, url);
+        } catch (NoSuchMethodException nsme) {
+            Method urlMethod = builderClass.getMethod("g", String.class);
+            urlMethod.invoke(builder, url);
+        }
+
+        // 3b. 设置 HTTP 方法和请求体: builder.e("POST", requestBody)
+        Method methodMethod = builderClass.getMethod("e", String.class, requestBodyClass);
+        methodMethod.invoke(builder, "POST", requestBody);
+
+        // 3c. Accept 头 (流式)
+        if (stream) {
+            try {
+                Method addHeaderMethod = builderClass.getMethod("a", String.class, String.class);
+                addHeaderMethod.invoke(builder, "Accept", "text/event-stream");
+            } catch (Throwable ignored) {}
+        }
+
+        // 3d. 构建: builder.b()
+        Method buildMethod = builderClass.getMethod("b");
+        Object request = buildMethod.invoke(builder);
+
+        // 4. 执行: client.b(request) → Call, then call.execute() → Response
+        Class<?> requestClass = cl.loadClass("nu.Request");
+        Method newCallMethod = client.getClass().getMethod("b", requestClass);
+        Object call = newCallMethod.invoke(client, request);
+
+        // execute() 方法名未混淆
+        Method executeMethod = call.getClass().getMethod("execute");
+        Object response = executeMethod.invoke(call);
+
+        log("✓ 混淆 OkHttp 请求成功 (Deekseep 方案)");
+        return response;
     }
 
     /** HttpURLConnection 兜底请求方法 */

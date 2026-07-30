@@ -195,11 +195,11 @@ public class GlmCapture {
 
     // ── 就绪检查 ──────────────────────────────────────────────
     /**
-     * v1.0.41: 不再要求 okHttpClient，只需 auth 即可就绪。
-     * 网关运行在 GLMKit APP 进程中，使用 HttpURLConnection 发送请求。
+     * v1.0.49: OkHttpClient 捕获即就绪 (Deekseep 方案 — auth 由拦截器处理)。
+     * 兜底：auth 捕获也可就绪 (HttpURLConnection 方案)。
      */
     public boolean isReady() {
-        return authToken != null || apiKey != null || cookie != null;
+        return okHttpClient != null || authToken != null || apiKey != null || cookie != null;
     }
 
     public String readinessDetail() {
