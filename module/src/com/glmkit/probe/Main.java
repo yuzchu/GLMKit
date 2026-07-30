@@ -1295,7 +1295,7 @@ public class Main implements IXposedHookLoadPackage {
                             // v1.0.60: 诊断日志 — 记录前 10 条请求体摘要
                             if (diagBodyCount.getAndIncrement() < 10) {
                                 boolean isGw = GlmCapture.isGatewayRequest();
-                                boolean hasModel = body.contains("\"model\"");
+                                boolean hasModel = body.contains("\"model\"") || body.contains("\"assistant_id\"");
                                 log("[DIAG] RequestBody.create: len=" + body.length()
                                     + ", isGateway=" + isGw + ", hasModel=" + hasModel
                                     + ", preview=" + body.substring(0, Math.min(80, body.length())));
@@ -1304,22 +1304,17 @@ public class Main implements IXposedHookLoadPackage {
                             // v1.0.57: 跳过网关自身请求，防止 model 捕获反馈循环
                             if (GlmCapture.isGatewayRequest()) return;
 
-                            // 快速检查: 是否是 chat completion 请求体
-                            if (!body.contains("\"model\"")) return;
+                            // v1.0.67: 快速检查 — GLM API 用 assistant_id/meta_data，非 "model"
+                            if (!body.contains("\"model\"") && !body.contains("\"assistant_id\"") && !body.contains("\"meta_data\"")) return;
 
-                            JSONObject json = new JSONObject(body);
-                            String model = json.optString("model", null);
+                            // v1.0.67: 使用 extractModelFromJson 统一提取 (支持 assistant_id + chat_mode)
+                            String model = extractModelFromJson(body);
                             if (model != null && !model.isEmpty()) {
                                 String old = getCapture().getCapturedModel();
                                 getCapture().setCapturedModel(model);
                                 if (old == null || !old.equals(model)) {
                                     log("★★★ 捕获模型 ID: " + model);
-                                    // 记录请求体摘要
-                                    boolean hasMessages = json.has("messages");
-                                    boolean stream = json.optBoolean("stream", false);
-                                    log("  请求体: model=" + model + ", stream=" + stream
-                                        + ", messages=" + hasMessages
-                                        + ", len=" + body.length());
+                                    log("  请求体: model=" + model + ", len=" + body.length());
                                 }
                             }
                         } catch (Throwable ignored) {}
@@ -1338,10 +1333,10 @@ public class Main implements IXposedHookLoadPackage {
                                 byte[] bytes = (byte[]) param.args[1];
                                 if (bytes == null || bytes.length < 10) return;
                                 String body = new String(bytes, 0, Math.min(bytes.length, 8192), StandardCharsets.UTF_8);
-                                if (!body.contains("\"model\"")) return;
+                                // v1.0.67: GLM API 用 assistant_id/meta_data，非 "model"
+                                if (!body.contains("\"model\"") && !body.contains("\"assistant_id\"") && !body.contains("\"meta_data\"")) return;
                                 if (GlmCapture.isGatewayRequest()) return;
-                                JSONObject json = new JSONObject(body);
-                                String model = json.optString("model", null);
+                                String model = extractModelFromJson(body);
                                 if (model != null && !model.isEmpty()) {
                                     String old = getCapture().getCapturedModel();
                                     getCapture().setCapturedModel(model);
@@ -1368,10 +1363,10 @@ public class Main implements IXposedHookLoadPackage {
                             try {
                                 String body = (String) param.args[1];
                                 if (body == null || body.length() < 10) return;
-                                if (!body.contains("\"model\"")) return;
+                                // v1.0.67: GLM API 用 assistant_id/meta_data，非 "model"
+                                if (!body.contains("\"model\"") && !body.contains("\"assistant_id\"") && !body.contains("\"meta_data\"")) return;
                                 if (GlmCapture.isGatewayRequest()) return;
-                                JSONObject json = new JSONObject(body);
-                                String model = json.optString("model", null);
+                                String model = extractModelFromJson(body);
                                 if (model != null && !model.isEmpty()) {
                                     String old = getCapture().getCapturedModel();
                                     getCapture().setCapturedModel(model);
