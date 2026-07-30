@@ -563,10 +563,12 @@ public class LocalApiGateway {
 
     private static java.util.List<String> getPersistentModels() {
         java.util.List<String> models = new java.util.ArrayList<>();
+        log("[getPersistentModels] context=" + (context != null ? "ok" : "null"));
         if (context != null) {
             try {
                 SharedPreferences prefs = context.getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE);
                 String json = prefs.getString(PREF_MODELS_KEY, null);
+                log("[getPersistentModels] stored json=" + (json != null ? json : "null"));
                 if (json != null && !json.isEmpty()) {
                     JSONArray arr = new JSONArray(json);
                     for (int i = 0; i < arr.length(); i++) {
@@ -577,13 +579,14 @@ public class LocalApiGateway {
                     }
                 }
             } catch (Throwable t) {
-                log("读取持久化模型列表失败: " + t.getMessage());
+                log("[getPersistentModels] 读取失败: " + t.getMessage());
             }
         }
         // 空列表时返回两个默认模型
         if (models.isEmpty()) {
             models.add("65940acff94777010aa6b796:thinking");
             models.add("65940acff94777010aa6b796:fast");
+            log("[getPersistentModels] 空列表 → 返回2个默认模型");
         }
         return models;
     }
@@ -610,9 +613,10 @@ public class LocalApiGateway {
         JSONObject resp = new JSONObject();
         try {
             String capturedModel = (backend != null) ? backend.getCapturedModel() : null;
+            log("[/v1/models/capture] backend=" + (backend != null ? "ok" : "null") + " capturedModel=" + (capturedModel != null ? capturedModel : "null"));
             if (capturedModel == null || capturedModel.isEmpty()) {
                 resp.put("success", false);
-                resp.put("message", "当前没有捕获到模型，请先在智谱清言中发起一次对话");
+                resp.put("message", "当前没有捕获到模型。步骤：1) 打开智谱清言APP 2) 发送任意消息 3) 等待hook捕获 4) 再点此按钮");
                 sendResponse(os, 400, "Bad Request", "application/json", resp.toString());
                 return;
             }
@@ -716,8 +720,8 @@ public class LocalApiGateway {
             resp.put("object", "list");
             JSONArray data = new JSONArray();
 
-            // v1.0.64: 只返回持久化模型列表
             java.util.List<String> models = getPersistentModels();
+            log("[/v1/models] 返回 " + models.size() + " 个模型: " + models);
             for (String m : models) {
                 JSONObject model = new JSONObject();
                 model.put("id", m);
@@ -727,7 +731,9 @@ public class LocalApiGateway {
                 data.put(model);
             }
             resp.put("data", data);
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log("[/v1/models] 错误: " + e.getMessage());
+        }
         sendResponse(os, 200, "OK", "application/json", resp.toString());
     }
 

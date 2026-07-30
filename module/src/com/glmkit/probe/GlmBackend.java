@@ -182,33 +182,38 @@ public class GlmBackend implements LocalApiGateway.Backend {
     private JSONObject buildGlmRequestBody(LocalApiGateway.CompletionRequest req) throws Exception {
         JSONObject payload = new JSONObject();
 
-        // v1.0.63: GLM API 格式 — assistant_id + chat_mode，不是 model
-        // 解析 capturedModel: "assistant_id:chat_mode" 或 "assistant_id"
+        // v1.0.66: GLM API 格式 — assistant_id + meta_data.chat_mode
+        // 模型 ID 格式: "assistant_id:suffix"
+        // suffix → chat_mode 映射: "thinking"→"zero", "fast"→"", "deep_research"→"deep_research"
         String capturedModel = capture.getCapturedModel();
         String assistantId = "65940acff94777010aa6b796"; // 默认
-        String chatMode = "";
+        String suffix = "fast"; // 默认后缀
 
-        if (capturedModel != null && !capturedModel.isEmpty()) {
+        // 优先从请求的 model 字段解析（用户选择的模型）
+        if (req.model != null && !req.model.isEmpty()) {
+            int colonIdx = req.model.indexOf(':');
+            if (colonIdx > 0) {
+                assistantId = req.model.substring(0, colonIdx);
+                suffix = req.model.substring(colonIdx + 1);
+            } else if (req.model.length() >= 20) {
+                // 纯 assistant_id 无后缀
+                assistantId = req.model;
+            }
+        }
+
+        // 如果请求没指定，回退到捕获的模型
+        if ((suffix == null || suffix.isEmpty()) && capturedModel != null && !capturedModel.isEmpty()) {
             int colonIdx = capturedModel.indexOf(':');
             if (colonIdx > 0) {
                 assistantId = capturedModel.substring(0, colonIdx);
-                chatMode = capturedModel.substring(colonIdx + 1);
+                suffix = capturedModel.substring(colonIdx + 1);
             } else {
                 assistantId = capturedModel;
             }
         }
 
-        // 根据请求模型推断 chat_mode
-        if (req.model != null) {
-            String modelLower = req.model.toLowerCase();
-            if (modelLower.contains("thinking") || modelLower.contains("reasoner")
-                    || modelLower.contains("zero") || modelLower.contains("o1")) {
-                if (chatMode.isEmpty()) chatMode = "thinking";
-            }
-            if (modelLower.contains("deep") && modelLower.contains("research")) {
-                chatMode = "deep_research";
-            }
-        }
+        // 后缀 → 真实 chat_mode 值
+        String chatMode = suffixToChatMode(suffix);
 
         payload.put("assistant_id", assistantId);
         payload.put("conversation_id", "");
@@ -241,6 +246,18 @@ public class GlmBackend implements LocalApiGateway.Backend {
             + " msgs=" + glmMessages.length());
 
         return payload;
+    }
+
+    /** v1.0.66: 用户友好后缀 → 真实 chat_mode 值 */
+    private String suffixToChatMode(String suffix) {
+        if (suffix == null || suffix.isEmpty()) return "";
+        switch (suffix) {
+            case "thinking":      return "zero";
+            case "fast":          return "";
+            case "deep_research": return "deep_research";
+            case "zero":          return "zero"; // 兼容直接用 chat_mode 值
+            default:              return suffix; // 未知值原样传
+        }
     }
 
     /** v1.0.63: 将 OpenAI messages 转为 GLM 格式 */

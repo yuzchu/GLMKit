@@ -1711,18 +1711,17 @@ public class Main implements IXposedHookLoadPackage {
     private String extractModelFromJson(String str) {
         if (str == null) return null;
 
-        // v1.0.62: GLM API 不用 "model" 字段，用 "assistant_id" + "chat_mode"
+        // v1.0.66: GLM API 用 assistant_id + meta_data.chat_mode
         // 优先查找 "assistant_id"
         String assistantId = extractJsonValue(str, "assistant_id");
         if (assistantId != null && !assistantId.isEmpty()) {
-            // 同时提取 chat_mode 用于诊断
-            String chatMode = extractJsonValue(str, "chat_mode");
-            if (chatMode != null && !chatMode.isEmpty()) {
-                log("[DIAG] 捕获 assistant_id=" + assistantId + " chat_mode=" + chatMode);
-                return assistantId + ":" + chatMode;
-            }
-            log("[DIAG] 捕获 assistant_id=" + assistantId);
-            return assistantId;
+            // v1.0.66: chat_mode 嵌套在 meta_data 里，不是顶层
+            String chatMode = extractChatModeFromMeta(str);
+            // 映射 chat_mode → 用户友好后缀
+            // "zero" → "thinking", "" → "fast", "deep_research" → "deep_research"
+            String suffix = chatModeToSuffix(chatMode);
+            log("[DIAG] 捕获 assistant_id=" + assistantId + " chat_mode=" + chatMode + " → suffix=" + suffix);
+            return assistantId + ":" + suffix;
         }
 
         // 回退到 "model" 字段（OpenAI 兼容格式）
@@ -1730,6 +1729,67 @@ public class Main implements IXposedHookLoadPackage {
         if (model != null && !model.isEmpty()) return model;
 
         return null;
+    }
+
+    /** v1.0.66: 从 meta_data 对象提取 chat_mode（嵌套字段） */
+    private String extractChatModeFromMeta(String str) {
+        if (str == null) return "";
+        // 尝试标准 JSON 解析 meta_data.chat_mode
+        try {
+            JSONObject json = new JSONObject(str);
+            if (json.has("meta_data")) {
+                JSONObject metaData = json.getJSONObject("meta_data");
+                return metaData.optString("chat_mode", "");
+            }
+        } catch (Throwable ignored) {}
+        // 尝试 SSE 格式
+        try {
+            String[] lines = str.split("\n");
+            for (String line : lines) {
+                line = line.trim();
+                if (line.startsWith("data:") && line.contains("\"meta_data\"")) {
+                    String jsonPart = line.substring(5).trim();
+                    if (jsonPart.startsWith("{")) {
+                        JSONObject json = new JSONObject(jsonPart);
+                        if (json.has("meta_data")) {
+                            JSONObject metaData = json.getJSONObject("meta_data");
+                            return metaData.optString("chat_mode", "");
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        // 正则提取 meta_data 中的 chat_mode
+        try {
+            int metaIdx = str.indexOf("\"meta_data\"");
+            if (metaIdx >= 0) {
+                int chatIdx = str.indexOf("\"chat_mode\"", metaIdx);
+                if (chatIdx >= 0) {
+                    int colonIdx = str.indexOf(":", chatIdx + 11);
+                    if (colonIdx >= 0) {
+                        int startQuote = str.indexOf("\"", colonIdx + 1);
+                        if (startQuote >= 0) {
+                            int endQuote = str.indexOf("\"", startQuote + 1);
+                            if (endQuote >= 0) {
+                                return str.substring(startQuote + 1, endQuote);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return "";
+    }
+
+    /** v1.0.66: chat_mode 值 ↔ 用户友好后缀映射 */
+    private String chatModeToSuffix(String chatMode) {
+        if (chatMode == null) return "fast";
+        switch (chatMode) {
+            case "zero":          return "thinking";
+            case "deep_research": return "deep_research";
+            case "":              return "fast";
+            default:              return chatMode; // 未知值原样保留
+        }
     }
 
     /** 从 JSON 字符串提取指定字段的字符串值（支持标准 JSON、SSE、正则） */
