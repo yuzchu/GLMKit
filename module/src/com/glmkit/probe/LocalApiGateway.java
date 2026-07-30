@@ -450,6 +450,7 @@ public class LocalApiGateway {
                 health.put("status", "ok");
                 health.put("running", isRunning());
                 health.put("endpoint", endpoint());
+                health.put("userId", android.os.Process.myUid() / 100000); // v1.0.71: 分身标识
                 health.put("activeConnections", activeConnections.get());
                 if (backend != null) {
                     health.put("backendReady", backend.isReady());
@@ -1227,7 +1228,7 @@ public class LocalApiGateway {
             + ".ok{color:#0f0}.err{color:#e94560}.warn{color:#fa0}"
             + "</style></head><body>"
             + "<h1>GLMKit 控制面板</h1>"
-            + "<div class=\"status\" style=\"text-align:center;color:#666;font-size:12px\">v1.0.70</div>"
+            + "<div class=\"status\" style=\"text-align:center;color:#666;font-size:12px\">v1.0.71</div>"
 
             // 状态区
             + "<div class=\"card\"><h2>状态</h2>"
@@ -1274,8 +1275,9 @@ public class LocalApiGateway {
             + "fetch(B+'/healthz').then(r=>r.json()).then(d=>{"
             + "document.getElementById('status').innerHTML="
             + "'网关: <span class=ok>'+(d.running?'运行中':'已停止')+'</span>'"
-            + "' | 端口: '+d.endpoint"
-            + "' | 后端: '+(d.backendReady?'<span class=ok>就绪</span>':'<span class=err>未就绪</span>');"
+            + "+' | 端口: '+d.endpoint"
+            + "+' | 用户: '+d.userId"
+            + "+' | 后端: '+(d.backendReady?'<span class=ok>就绪</span>':'<span class=err>未就绪</span>');"
             + "}).catch(e=>{document.getElementById('status').innerHTML='<span class=err>无法连接网关</span>';});"
 
             + "fetch(B+'/v1/diagnostic').then(r=>r.json()).then(d=>{"

@@ -219,12 +219,19 @@ public class Main implements IXposedHookLoadPackage {
             return;
         }
 
+        // v1.0.71: 按 Android user ID 偏移端口，支持分身/工作资料多实例
+        // 主用户 (user 0) → 16766, 分身 (user 999) → 17765, 工作资料 (user 10) → 16776
+        int userId = android.os.Process.myUid() / 100000;
+        int port = 16766 + userId;
+        LocalApiGateway.setListenPort(port);
+        log("分身支持: userId=" + userId + " → 端口=" + port);
+
         try {
             GlmBackend backend = new GlmBackend(getCapture());
-            int port = LocalApiGateway.start(appContext, backend);
-            if (port > 0) {
-                log("★★★ 网关已在智谱清言进程内启动，端口: " + port + " ★★★");
-                showToast("GLMKit 网关已启动 (端口 " + port + ")");
+            int actualPort = LocalApiGateway.start(appContext, backend);
+            if (actualPort > 0) {
+                log("★★★ 网关已在智谱清言进程内启动，端口: " + actualPort + " (userId=" + userId + ") ★★★");
+                showToast("GLMKit 网关已启动 (端口 " + actualPort + ")");
             } else {
                 log("网关启动失败，端口 <= 0");
                 gatewayStarted.set(false); // 允许重试

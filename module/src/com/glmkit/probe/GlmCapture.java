@@ -18,6 +18,13 @@ public class GlmCapture {
     /** 共享 auth 文件路径 — 模块写入，GLMKit APP 网关读取 */
     public static final String SHARED_AUTH_FILE = "/sdcard/glmkit_auth.json";
 
+    /** v1.0.71: 按 user ID 隔离的共享文件路径（分身支持） */
+    public static String getSharedAuthFile() {
+        int userId = android.os.Process.myUid() / 100000;
+        if (userId == 0) return SHARED_AUTH_FILE; // 主用户保持兼容
+        return "/sdcard/glmkit_auth_" + userId + ".json";
+    }
+
     private volatile Object okHttpClient;  // okhttp3.OkHttpClient 实例（v1.0.41 后不再需要）
     private volatile String baseUrl;       // Retrofit base URL
     private volatile String apiUrl;        // 最后捕获的 GLM API URL
@@ -123,7 +130,7 @@ public class GlmCapture {
             json.append("\"timestamp\":").append(System.currentTimeMillis());
             json.append("}");
 
-            File file = new File(SHARED_AUTH_FILE);
+            File file = new File(getSharedAuthFile());
             FileWriter writer = new FileWriter(file);
             writer.write(json.toString());
             writer.flush();
@@ -149,7 +156,7 @@ public class GlmCapture {
      */
     public boolean loadFromSharedFile() {
         try {
-            File file = new File(SHARED_AUTH_FILE);
+            File file = new File(getSharedAuthFile());
             if (!file.exists()) return false;
 
             StringBuilder sb = new StringBuilder();
