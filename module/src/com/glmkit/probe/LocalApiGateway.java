@@ -1,6 +1,8 @@
 package com.glmkit.probe;
 
 import android.content.Context;
+import android.content.SharedPreferences;
+import android.util.Log;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -437,19 +439,18 @@ public class LocalApiGateway {
 
         if ("POST".equals(method) && "/restart".equals(path)) {
             log("收到 /restart 请求，正在重启网关...");
-            // 重新从 XSharedPreferences 读取配置（API Key 等）
+            // 重新从 SharedPreferences 读取配置（API Key 等）
             try {
-                de.robv.android.xposed.XSharedPreferences xPrefs =
-                    new de.robv.android.xposed.XSharedPreferences("com.glmkit.proxy", "glmkit_settings");
-                xPrefs.reload();
-                xPrefs.makeReadable();
-                String newKey = xPrefs.getString("api_key", null);
-                setApiKey(newKey);
-                int newPort = xPrefs.getInt("port", listenPort);
-                if (newPort >= 1024 && newPort <= 65535) {
-                    listenPort = newPort;
+                if (context != null) {
+                    SharedPreferences prefs = context.getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE);
+                    String newKey = prefs.getString("api_key", null);
+                    setApiKey(newKey);
+                    int newPort = prefs.getInt("port", listenPort);
+                    if (newPort >= 1024 && newPort <= 65535) {
+                        listenPort = newPort;
+                    }
+                    log("重启时重新加载配置: port=" + listenPort + ", apiKey=" + (newKey != null && !newKey.isEmpty() ? "已设置" : "未设置"));
                 }
-                log("重启时重新加载配置: port=" + listenPort + ", apiKey=" + (newKey != null && !newKey.isEmpty() ? "已设置" : "未设置"));
             } catch (Throwable t) {
                 log("重启时读取配置失败: " + t.getMessage());
             }
@@ -603,8 +604,9 @@ public class LocalApiGateway {
         JSONObject resp = new JSONObject();
         try {
             resp.put("module", "GLMKit");
-            resp.put("log_file", Main.getLogFilePath());
-            resp.put("logs", Main.getLogBuffer());
+            resp.put("log_file", "/sdcard/glmkit_debug.log");
+            // 简单日志缓冲区 — 不依赖 Main 类（可能在非 Xposed 进程中无法加载）
+            resp.put("logs", "");
         } catch (Exception ignored) {}
         sendResponse(os, 200, "OK", "application/json", resp.toString());
     }
@@ -1003,8 +1005,6 @@ public class LocalApiGateway {
     }
 
     private static void log(String msg) {
-        try {
-            de.robv.android.xposed.XposedBridge.log("[" + TAG + "] " + msg);
-        } catch (Throwable ignored) {}
+        Log.d(TAG, msg);
     }
 }

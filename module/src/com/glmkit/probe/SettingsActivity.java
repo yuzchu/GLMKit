@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.Gravity;
@@ -62,8 +63,22 @@ public final class SettingsActivity extends Activity {
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setTitle("GLMKit 设置");
+        requestNotificationPermission();
         buildUi();
         refreshStatus();
+    }
+
+    /**
+     * Android 13+ 需要运行时请求 POST_NOTIFICATIONS 权限，
+     * 否则前台 Service 通知不显示，Service 可能被系统杀死。
+     */
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            String perm = "android.permission.POST_NOTIFICATIONS";
+            if (checkSelfPermission(perm) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{perm}, 1001);
+            }
+        }
     }
 
     @Override protected void onResume() {
@@ -546,13 +561,33 @@ public final class SettingsActivity extends Activity {
      * v1.0.41: 启动网关 — 启动前台 Service（在 GLMKit APP 自身进程中运行网关）
      */
     private void startGateway() {
+        Toast.makeText(this, "正在启动网关...", Toast.LENGTH_SHORT).show();
         boolean ok = LocalApiKeepAliveService.setEnabled(this, true);
         if (ok) {
-            Toast.makeText(this, "正在启动网关...", Toast.LENGTH_SHORT).show();
             keepAliveSwitch.setChecked(true);
             saveKeepAlive(true);
+            // 延迟 2 秒检查网关是否真正启动
+            new Thread(() -> {
+                try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
+                final int port = getSavedPort();
+                String result = httpGet("http://127.0.0.1:" + port + "/healthz", 2000);
+                runOnUiThread(() -> {
+                    if (result != null) {
+                        Toast.makeText(this, "✅ 网关已启动 (端口 " + port + ")",
+                                Toast.LENGTH_LONG).show();
+                    } else {
+                        Toast.makeText(this, "⚠️ 网关启动失败，请查看日志\n"
+                                + "可能原因：\n"
+                                + "1. 通知权限未授予\n"
+                                + "2. 端口 " + port + " 被占用\n"
+                                + "3. Service 启动异常",
+                                Toast.LENGTH_LONG).show();
+                    }
+                    refreshStatus();
+                });
+            }, "glmkit-start-check").start();
         } else {
-            Toast.makeText(this, "⚠️ 启动失败", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "⚠️ 启动失败：Service 无法启动", Toast.LENGTH_LONG).show();
         }
         refreshStatus();
     }

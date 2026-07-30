@@ -10,7 +10,7 @@ import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
 
-import de.robv.android.xposed.XposedBridge;
+import android.util.Log;
 
 /**
  * GlmBackend — 通过反射使用目标应用内捕获的 OkHttp 客户端发起 GLM API 请求，
@@ -753,8 +753,6 @@ public class GlmBackend implements LocalApiGateway.Backend {
     }
 
     private void log(String msg) {
-        try {
-            XposedBridge.log("[" + TAG + "] " + msg);
-        } catch (Throwable ignored) {}
+        Log.d(TAG, msg);
     }
 }
