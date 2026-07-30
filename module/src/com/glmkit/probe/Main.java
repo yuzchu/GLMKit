@@ -1177,8 +1177,35 @@ public class Main implements IXposedHookLoadPackage {
     // ════════════════════════════════════════════════════════════
     private void installCaptureInterceptor(Object client, ClassLoader cl) {
         if (!realCallHooked.compareAndSet(false, true)) return;
+        Class<?> realCallClass;
         try {
-            Class<?> realCallClass = cl.loadClass("okhttp3.internal.connection.RealCall");
+            realCallClass = cl.loadClass("okhttp3.internal.connection.RealCall");
+        } catch (Throwable t) {
+            realCallHooked.set(false);
+            log("安装 RealCall 拦截器失败 (类未找到): " + t.getMessage());
+            return;
+        }
+
+        // v1.0.55: 核心修复 — hook getResponseWithInterceptorChain$okhttp() 的返回值
+        // auth 由 OkHttp Interceptor 在拦截器链中注入，originalRequest 没有 auth。
+        // getResponseWithInterceptorChain 是 execute() 和 enqueue() 的共同出口，
+        // 返回的 Response.request() 包含拦截器添加的所有头（含 Authorization）。
+        try {
+            XposedHelpers.findAndHookMethod(
+                realCallClass, "getResponseWithInterceptorChain$okhttp",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        captureAuthFromResponse(param.result);
+                    }
+                });
+            log("✓ 安装 getResponseWithInterceptorChain auth 捕获 hook");
+        } catch (Throwable t) {
+            log("⚠ getResponseWithInterceptorChain hook 失败: " + t.getMessage());
+        }
+
+        // hook execute() — 同步请求，afterHookedMethod 获取 Response 提取 auth
+        try {
             XposedHelpers.findAndHookMethod(
                 realCallClass, "execute",
                 new XC_MethodHook() {
@@ -1186,19 +1213,85 @@ public class Main implements IXposedHookLoadPackage {
                     protected void beforeHookedMethod(MethodHookParam param) {
                         captureRequest(param.thisObject, cl);
                     }
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        captureAuthFromResponse(param.result);
+                    }
                 });
+            log("✓ 安装 execute() hook");
+        } catch (Throwable t) {
+            log("⚠ execute() hook 失败: " + t.getMessage());
+        }
+
+        // hook enqueue() — 异步请求，Callback 类被混淆为 nu.e（不是 okhttp3.Callback！）
+        try {
+            Class<?> callbackClass = cl.loadClass("nu.e");
             XposedHelpers.findAndHookMethod(
-                realCallClass, "enqueue", cl.loadClass("okhttp3.Callback"),
+                realCallClass, "enqueue", callbackClass,
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
                         captureRequest(param.thisObject, cl);
                     }
                 });
-            log("安装请求捕获拦截器成功");
+            log("✓ 安装 enqueue() hook (nu.e)");
         } catch (Throwable t) {
-            realCallHooked.set(false);
-            log("安装 RealCall 拦截器失败: " + t.getMessage());
+            log("⚠ enqueue() hook 失败: " + t.getMessage());
+        }
+
+        log("安装请求捕获拦截器完成 (v1.0.55)");
+    }
+
+    /**
+     * v1.0.55: 从 Response.request() 提取 auth。
+     * Response.request() 返回最终请求（含拦截器添加的 Authorization 头）。
+     * 这是捕获 auth 的唯一可靠方法，因为 auth 不在 originalRequest 中。
+     */
+    private void captureAuthFromResponse(Object response) {
+        if (response == null) return;
+        try {
+            // okhttp3.Response.request() → nu.Request (最终请求，含 auth)
+            Method requestMethod = response.getClass().getMethod("request");
+            Object finalRequest = requestMethod.invoke(response);
+            if (finalRequest == null) return;
+
+            // nu.Request.k() → nu.u (HttpUrl)
+            Method urlMethod = finalRequest.getClass().getMethod("k");
+            Object httpUrl = urlMethod.invoke(finalRequest);
+            if (httpUrl == null) return;
+            String urlStr = httpUrl.toString();
+
+            // 只从 bigmodel API 请求捕获 auth
+            if (!urlStr.toLowerCase().contains("bigmodel")) return;
+
+            // nu.Request.d(String) → String (读取头)
+            Method headerMethod = finalRequest.getClass().getMethod("d", String.class);
+
+            String auth = (String) headerMethod.invoke(finalRequest, "Authorization");
+            if (auth != null && !auth.isEmpty()) {
+                String old = getCapture().getAuthToken();
+                getCapture().setAuthToken(auth);
+                if (old == null || !old.equals(auth)) {
+                    log("✓✓ 捕获 Authorization (Response.request): " + auth.substring(0, Math.min(30, auth.length())) + "...");
+                }
+            }
+
+            String apiKey = (String) headerMethod.invoke(finalRequest, "x-api-key");
+            if (apiKey != null && !apiKey.isEmpty()) {
+                getCapture().setApiKey(apiKey);
+                log("✓✓ 捕获 x-api-key (Response.request)");
+            }
+
+            String cookie = (String) headerMethod.invoke(finalRequest, "Cookie");
+            if (cookie != null && !cookie.isEmpty()) {
+                getCapture().setCookie(cookie);
+            }
+
+            // 同时更新 API URL（确保是最新的）
+            getCapture().setApiUrl(urlStr);
+
+        } catch (Throwable t) {
+            log("⚠ captureAuthFromResponse 异常: " + t.getMessage());
         }
     }
 
