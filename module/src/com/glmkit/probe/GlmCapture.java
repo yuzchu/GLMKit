@@ -28,6 +28,12 @@ public class GlmCapture {
     private volatile String capturedModel; // v1.0.53: 从 APP 请求体拦截的真实模型 ID
     private volatile long captureTimestamp; // 捕获时间戳
 
+    // v1.0.57: ThreadLocal 标记网关自身请求，防止 model 捕获反馈循环
+    private static final ThreadLocal<Boolean> gatewayRequest = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    public static void markGatewayRequest() { gatewayRequest.set(Boolean.TRUE); }
+    public static void unmarkGatewayRequest() { gatewayRequest.set(Boolean.FALSE); }
+    public static boolean isGatewayRequest() { return gatewayRequest.get(); }
+
     // ── OkHttp 客户端 ─────────────────────────────────────────
     public Object getOkHttpClient() { return okHttpClient; }
     public void setOkHttpClient(Object client) {

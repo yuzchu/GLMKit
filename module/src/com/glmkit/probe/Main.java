@@ -1137,6 +1137,9 @@ public class Main implements IXposedHookLoadPackage {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         try {
+                            // v1.0.57: 跳过网关自身请求，防止 model 捕获反馈循环
+                            if (GlmCapture.isGatewayRequest()) return;
+
                             String body = (String) param.args[1];
                             if (body == null || body.length() < 10) return;
 
@@ -1251,7 +1254,21 @@ public class Main implements IXposedHookLoadPackage {
      */
     private void captureAuthFromResponse(Object response) {
         if (response == null) return;
+        // v1.0.57: 跳过网关自身请求的响应，防止 auth 捕获反馈循环
+        if (GlmCapture.isGatewayRequest()) return;
         try {
+            // v1.0.57: 只从成功响应 (200-299) 捕获 auth，避免从 401 响应捕获过期 token
+            // 网关自身请求也经过此 hook，如果网关请求得到 401，旧代码会捕获过期 auth → 反馈循环
+            int responseCode = -1;
+            try {
+                Method codeMethod = response.getClass().getMethod("code");
+                responseCode = (Integer) codeMethod.invoke(response);
+            } catch (Throwable ignored) {}
+            if (responseCode < 200 || responseCode >= 300) {
+                // 非成功响应，不捕获 auth（避免过期 token 覆盖有效 token）
+                return;
+            }
+
             // okhttp3.Response.request() → nu.Request (最终请求，含 auth)
             Method requestMethod = response.getClass().getMethod("request");
             Object finalRequest = requestMethod.invoke(response);
@@ -1274,7 +1291,7 @@ public class Main implements IXposedHookLoadPackage {
                 String old = getCapture().getAuthToken();
                 getCapture().setAuthToken(auth);
                 if (old == null || !old.equals(auth)) {
-                    log("✓✓ 捕获 Authorization (Response.request): " + auth.substring(0, Math.min(30, auth.length())) + "...");
+                    log("✓✓ 捕获 Authorization (Response.request, code=" + responseCode + "): " + auth.substring(0, Math.min(30, auth.length())) + "...");
                 }
             }
 
@@ -1298,6 +1315,8 @@ public class Main implements IXposedHookLoadPackage {
     }
 
     private void captureRequest(Object call, ClassLoader cl) {
+        // v1.0.57: 跳过网关自身请求
+        if (GlmCapture.isGatewayRequest()) return;
         try {
             Object request = XposedHelpers.getObjectField(call, "originalRequest");
             if (request == null) {

@@ -508,9 +508,16 @@ public class GlmBackend implements LocalApiGateway.Backend {
         }
 
         // 2. 创建 RequestBody: nu.z.create(mediaType, bodyString)
+        // v1.0.57: 标记网关自身请求，防止 hookRequestBodyCreate 拦截到网关自己的 model
         Class<?> requestBodyClass = cl.loadClass("nu.z");
         Method createMethod = requestBodyClass.getMethod("create", mediaTypeClass, String.class);
-        Object requestBody = createMethod.invoke(null, mediaType, body);
+        GlmCapture.markGatewayRequest();
+        Object requestBody;
+        try {
+            requestBody = createMethod.invoke(null, mediaType, body);
+        } finally {
+            GlmCapture.unmarkGatewayRequest();
+        }
 
         // 3. 构建 Request: nu.Request$a (Builder)
         Class<?> builderClass = cl.loadClass("nu.Request$a");
@@ -570,7 +577,14 @@ public class GlmBackend implements LocalApiGateway.Backend {
 
         // execute() 方法名未混淆
         Method executeMethod = call.getClass().getMethod("execute");
-        Object response = executeMethod.invoke(call);
+        // v1.0.57: 标记网关自身请求，防止 captureAuthFromResponse 从网关响应捕获 auth
+        GlmCapture.markGatewayRequest();
+        Object response;
+        try {
+            response = executeMethod.invoke(call);
+        } finally {
+            GlmCapture.unmarkGatewayRequest();
+        }
 
         // v1.0.51: 记录响应码
         try {
