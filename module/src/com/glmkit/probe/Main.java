@@ -2,6 +2,7 @@ package com.glmkit.probe;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
 import android.widget.Toast;
@@ -219,39 +220,62 @@ public class Main implements IXposedHookLoadPackage {
             return;
         }
 
-        // v1.0.72: 双重端口检测，支持分身/工作资料/同 user 虚拟化
-        // 1) Android user ID: 主用户0→16766, 分身999→17765, 工作资料10→16776
-        // 2) 进程名后缀: 同 user 内分身(如 :clone, :dual) 按后缀 hash 额外偏移
+        // v1.0.73: 端口优先级: 自定义端口 > user ID 偏移 > 默认 16766
         int userId = android.os.Process.myUid() / 100000;
-        int portOffset = userId;
-
-        // 读取进程名，检测同 user 内的分身
         String processName = readProcessName();
         String pkgName = appContext.getPackageName();
-        String processSuffix = null;
-        if (processName != null && !processName.equals(pkgName) && processName.startsWith(pkgName + ":")) {
-            processSuffix = processName.substring(pkgName.length() + 1);
-            // 后缀 hash → 正数偏移 (避开 user ID 范围, 加 10000)
-            int suffixHash = Math.abs(processSuffix.hashCode()) % 1000;
-            portOffset += 10000 + suffixHash;
-            log("检测到进程后缀: '" + processSuffix + "' → 额外偏移 " + (10000 + suffixHash));
+
+        // 1) 先读 SharedPreferences 自定义端口（用户在设置页配置的）
+        int customPort = 0;
+        String portSource = "默认";
+        try {
+            SharedPreferences prefs = appContext.getSharedPreferences("glmkit_settings", android.content.Context.MODE_PRIVATE);
+            customPort = prefs.getInt("port", 0);
+        } catch (Throwable ignored) {}
+
+        int port;
+        if (customPort >= 1024 && customPort <= 65535) {
+            // 用户设了自定义端口，直接用
+            port = customPort;
+            portSource = "自定义";
+        } else {
+            // 没设自定义端口，按 user ID 偏移
+            int portOffset = userId;
+            String processSuffix = null;
+            if (processName != null && !processName.equals(pkgName) && processName.startsWith(pkgName + ":")) {
+                processSuffix = processName.substring(pkgName.length() + 1);
+                int suffixHash = Math.abs(processSuffix.hashCode()) % 1000;
+                portOffset += 10000 + suffixHash;
+            }
+            port = 16766 + portOffset;
+            portSource = userId > 0 ? "user偏移" : "默认";
         }
 
-        int port = 16766 + portOffset;
         LocalApiGateway.setListenPort(port);
         log("╔══ 分身诊断 ═══════════════════════════════");
         log("║ UID=" + android.os.Process.myUid() + " | userId=" + userId);
         log("║ 进程名=" + processName);
-        log("║ 包名=" + pkgName + (processSuffix != null ? " (后缀:" + processSuffix + ")" : ""));
-        log("║ 端口=" + port + (processSuffix != null ? " (user+suffix)" : userId > 0 ? " (user偏移)" : " (默认)"));
+        log("║ 包名=" + pkgName);
+        log("║ 自定义端口=" + (customPort > 0 ? customPort : "未设置"));
+        log("║ 最终端口=" + port + " (" + portSource + ")");
         log("╚══════════════════════════════════════════════");
 
         try {
             GlmBackend backend = new GlmBackend(getCapture());
             int actualPort = LocalApiGateway.start(appContext, backend);
             if (actualPort > 0) {
-                log("★★★ 网关已启动 端口:" + actualPort + " (userId=" + userId + (processSuffix != null ? " suffix=" + processSuffix : "") + ") ★★★");
+                log("★★★ 网关已启动 端口:" + actualPort + " (userId=" + userId + ") ★★★");
                 showToast("GLMKit 网关已启动 (端口 " + actualPort + ")");
+                // v1.0.73: 写端口文件到 /sdcard/，方便查找分身端口
+                try {
+                    String portFile = "/sdcard/glmkit_port_" + actualPort + ".txt";
+                    java.io.FileWriter fw = new java.io.FileWriter(portFile);
+                    fw.write("port=" + actualPort + "\nuserId=" + userId + "\nprocess=" + processName + "\ntime=" + System.currentTimeMillis() + "\n");
+                    fw.close();
+                    log("端口文件已写入: " + portFile);
+                } catch (Throwable t) {
+                    log("写端口文件失败: " + t.getMessage());
+                }
             } else {
                 log("网关启动失败，端口 <= 0");
                 gatewayStarted.set(false);

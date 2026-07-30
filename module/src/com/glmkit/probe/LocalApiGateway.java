@@ -211,17 +211,15 @@ public class LocalApiGateway {
                         }
                     }
                 } catch (java.net.BindException be) {
-                    log("✗ 端口 " + listenPort + " 已被占用: " + be.getMessage());
-                    // 尝试随机端口（10000-60000范围）
-                    java.util.Random rng = new java.util.Random();
-                    for (int attempt = 0; attempt < 20; attempt++) {
-                        int altPort = 10000 + rng.nextInt(50000);
+                    log("✗ 端口 " + listenPort + " 已被占用");
+                    // v1.0.73: 顺序递增尝试，不用随机（方便用户找到端口）
+                    for (int altPort = listenPort + 1; altPort <= listenPort + 100; altPort++) {
                         try {
                             serverSocket = new ServerSocket();
                             serverSocket.bind(new InetSocketAddress("127.0.0.1", altPort),
                                               SOCKET_BACKLOG);
                             listenPort = altPort;
-                            log("✓ 网关在随机端口 " + altPort + " 启动成功");
+                            log("✓ 端口冲突，自动切换到 " + altPort);
                             bindLatch.countDown();
                             while (running.get() && !serverSocket.isClosed()) {
                                 try {
@@ -1229,7 +1227,7 @@ public class LocalApiGateway {
             + ".ok{color:#0f0}.err{color:#e94560}.warn{color:#fa0}"
             + "</style></head><body>"
             + "<h1>GLMKit 控制面板</h1>"
-            + "<div class=\"status\" style=\"text-align:center;color:#666;font-size:12px\">v1.0.72</div>"
+            + "<div class=\"status\" style=\"text-align:center;color:#666;font-size:12px\">v1.0.73</div>"
 
             // 状态区
             + "<div class=\"card\"><h2>状态</h2>"
