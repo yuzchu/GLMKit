@@ -45,8 +45,8 @@ public class GlmCapture {
     // ── Base URL ──────────────────────────────────────────────
     public String getBaseUrl() { return baseUrl; }
     public void setBaseUrl(String url) {
-        // v1.0.52: 只接受 bigmodel 域名 (API 端点)，拒绝 chatglm.cn 等网页域名
-        if (url != null && !url.isEmpty() && url.toLowerCase().contains("bigmodel")) {
+        // v1.0.60: 移除 contains("bigmodel") 过滤 — 调用方已用 isGlmApiUrl() 过滤
+        if (url != null && !url.isEmpty()) {
             this.baseUrl = url;
         }
     }
@@ -54,8 +54,8 @@ public class GlmCapture {
     // ── API URL ───────────────────────────────────────────────
     public String getApiUrl() { return apiUrl; }
     public void setApiUrl(String url) {
-        // v1.0.52: 只接受 bigmodel 域名 (API 端点)，拒绝 chatglm.cn 等网页域名
-        if (url != null && !url.isEmpty() && url.toLowerCase().contains("bigmodel")) {
+        // v1.0.60: 移除 contains("bigmodel") 过滤 — 调用方已用 isGlmApiUrl() 过滤
+        if (url != null && !url.isEmpty()) {
             this.apiUrl = url;
         }
     }

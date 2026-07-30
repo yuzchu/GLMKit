@@ -1130,17 +1130,29 @@ public class Main implements IXposedHookLoadPackage {
             Class<?> requestBodyClass = cl.loadClass("nu.z");
             Class<?> mediaTypeClass = cl.loadClass("nu.w");
 
+            // v1.0.60: 诊断计数器
+            final AtomicInteger diagBodyCount = new AtomicInteger(0);
+
             XposedHelpers.findAndHookMethod(requestBodyClass, "create",
                 mediaTypeClass, String.class,
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         try {
-                            // v1.0.57: 跳过网关自身请求，防止 model 捕获反馈循环
-                            if (GlmCapture.isGatewayRequest()) return;
-
                             String body = (String) param.args[1];
                             if (body == null || body.length() < 10) return;
+
+                            // v1.0.60: 诊断日志 — 记录前 10 条请求体摘要
+                            if (diagBodyCount.getAndIncrement() < 10) {
+                                boolean isGw = GlmCapture.isGatewayRequest();
+                                boolean hasModel = body.contains("\"model\"");
+                                log("[DIAG] RequestBody.create: len=" + body.length()
+                                    + ", isGateway=" + isGw + ", hasModel=" + hasModel
+                                    + ", preview=" + body.substring(0, Math.min(80, body.length())));
+                            }
+
+                            // v1.0.57: 跳过网关自身请求，防止 model 捕获反馈循环
+                            if (GlmCapture.isGatewayRequest()) return;
 
                             // 快速检查: 是否是 chat completion 请求体
                             if (!body.contains("\"model\"")) return;
@@ -1164,6 +1176,66 @@ public class Main implements IXposedHookLoadPackage {
                     }
                 });
             log("Hook RequestBody.create() 成功 (v1.0.53)");
+
+            // v1.0.60: 也 hook byte[] 重载 (APP 可能用 byte[] 而非 String 创建请求体)
+            try {
+                XposedHelpers.findAndHookMethod(requestBodyClass, "create",
+                    mediaTypeClass, byte[].class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                byte[] bytes = (byte[]) param.args[1];
+                                if (bytes == null || bytes.length < 10) return;
+                                String body = new String(bytes, 0, Math.min(bytes.length, 8192), StandardCharsets.UTF_8);
+                                if (!body.contains("\"model\"")) return;
+                                if (GlmCapture.isGatewayRequest()) return;
+                                JSONObject json = new JSONObject(body);
+                                String model = json.optString("model", null);
+                                if (model != null && !model.isEmpty()) {
+                                    String old = getCapture().getCapturedModel();
+                                    getCapture().setCapturedModel(model);
+                                    if (old == null || !old.equals(model)) {
+                                        log("★★★ 捕获模型 ID (byte[]): " + model);
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
+                        }
+                    });
+                log("Hook RequestBody.create(byte[]) 成功 (v1.0.60)");
+            } catch (Throwable t) {
+                log("Hook RequestBody.create(byte[]) 失败: " + t.getMessage());
+            }
+
+            // v1.0.60: 也 hook okhttp3.RequestBody (非混淆类名) 作为后备
+            try {
+                Class<?> okHttpRequestBodyClass = cl.loadClass("okhttp3.RequestBody");
+                XposedHelpers.findAndHookMethod(okHttpRequestBodyClass, "create",
+                    cl.loadClass("okhttp3.MediaType"), String.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                String body = (String) param.args[1];
+                                if (body == null || body.length() < 10) return;
+                                if (!body.contains("\"model\"")) return;
+                                if (GlmCapture.isGatewayRequest()) return;
+                                JSONObject json = new JSONObject(body);
+                                String model = json.optString("model", null);
+                                if (model != null && !model.isEmpty()) {
+                                    String old = getCapture().getCapturedModel();
+                                    getCapture().setCapturedModel(model);
+                                    if (old == null || !old.equals(model)) {
+                                        log("★★★ 捕获模型 ID (okhttp3): " + model);
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
+                        }
+                    });
+                log("Hook okhttp3.RequestBody.create() 成功 (v1.0.60)");
+            } catch (Throwable t) {
+                log("Hook okhttp3.RequestBody.create() 跳过: " + t.getMessage());
+            }
         } catch (Throwable t) {
             log("Hook RequestBody.create() 失败: " + t.getMessage());
         }
