@@ -80,6 +80,7 @@ public class Main implements IXposedHookLoadPackage {
     private static final Map<Object, ByteArrayOutputStream> streamBuffers = new ConcurrentHashMap<>();
     // v1.0.59: 诊断日志计数器 — 限制 URL 诊断日志数量
     private static final AtomicInteger diagUrlLogCount = new AtomicInteger(0);
+    private static final AtomicInteger diagBodyLogCount = new AtomicInteger(0);
 
     // ════════════════════════════════════════════════════════════
     //  日志缓冲区 + 文件写入
@@ -1384,9 +1385,216 @@ public class Main implements IXposedHookLoadPackage {
             // 同时更新 API URL（确保是最新的）
             getCapture().setApiUrl(urlStr);
 
+            // v1.0.61: 从响应体提取 model（peekBody 不消耗 body）
+            tryExtractModelFromResponse(response, urlStr);
+
+            // v1.0.61: 尝试从请求体提取 model
+            tryExtractModelFromRequest(finalRequest, urlStr);
+
         } catch (Throwable t) {
             log("⚠ captureAuthFromResponse 异常: " + t.getMessage());
         }
+    }
+
+    /**
+     * v1.0.61: 从响应体提取 model。
+     * 使用 peekBody() 安全读取响应体前 N 字节，不消耗原始 body。
+     * 支持 JSON 和 SSE (data: {...}) 格式。
+     */
+    private void tryExtractModelFromResponse(Object response, String urlStr) {
+        try {
+            // peekBody(long) — 读取响应体副本（不消耗原始 body）
+            Method peekBodyMethod = null;
+            for (Method m : response.getClass().getMethods()) {
+                if (m.getName().equals("peekBody") && m.getParameterTypes().length == 1) {
+                    peekBodyMethod = m;
+                    break;
+                }
+            }
+            if (peekBodyMethod == null) {
+                if (diagUrlLogCount.get() < 3) {
+                    log("[DIAG] peekBody 方法未找到");
+                }
+                return;
+            }
+
+            Object peekedBody = peekBodyMethod.invoke(response, 8192L);
+            if (peekedBody == null) return;
+
+            // 读取 string
+            Method stringMethod = null;
+            for (Method m : peekedBody.getClass().getMethods()) {
+                if (m.getName().equals("string") && m.getParameterTypes().length == 0) {
+                    stringMethod = m;
+                    break;
+                }
+            }
+            if (stringMethod == null) return;
+
+            String bodyStr = (String) stringMethod.invoke(peekedBody);
+            if (bodyStr == null || bodyStr.length() < 5) return;
+
+            // 诊断日志（前 5 条响应体摘要）
+            if (diagBodyLogCount.getAndIncrement() < 5) {
+                log("[DIAG] ResponseBody peek (" + Math.min(200, bodyStr.length()) + " chars): " +
+                    bodyStr.substring(0, Math.min(200, bodyStr.length())));
+            }
+
+            // 提取 model
+            String model = extractModelFromJson(bodyStr);
+            if (model != null && !model.isEmpty()) {
+                String old = getCapture().getCapturedModel();
+                getCapture().setCapturedModel(model);
+                if (old == null || !old.equals(model)) {
+                    log("★★★ 捕获模型 ID (response body): " + model + " (url=" + urlStr + ")");
+                }
+            }
+        } catch (Throwable t) {
+            if (diagBodyLogCount.get() < 3) {
+                log("[DIAG] tryExtractModelFromResponse: " + t.getMessage());
+            }
+        }
+    }
+
+    /**
+     * v1.0.61: 尝试从请求体提取 model。
+     * 使用 writeTo(buffer) 读取请求体内容。
+     * 注意：这可能消耗 one-shot body，但 JSON 请求体通常是可重复的。
+     */
+    private void tryExtractModelFromRequest(Object request, String urlStr) {
+        try {
+            // 获取 body
+            Method bodyMethod = null;
+            for (Method m : request.getClass().getMethods()) {
+                if (m.getName().equals("body") && m.getParameterTypes().length == 0) {
+                    bodyMethod = m;
+                    break;
+                }
+            }
+            if (bodyMethod == null) return;
+            Object body = bodyMethod.invoke(request);
+            if (body == null) return;
+
+            // 检查 isOneShot — 如果是一次性 body，跳过（避免消耗）
+            try {
+                Method isOneShot = null;
+                for (Method m : body.getClass().getMethods()) {
+                    if (m.getName().equals("isOneShot") && m.getParameterTypes().length == 0) {
+                        isOneShot = m;
+                        break;
+                    }
+                }
+                if (isOneShot != null && (Boolean) isOneShot.invoke(body)) {
+                    return; // 一次性 body，跳过
+                }
+            } catch (Throwable ignored) {}
+
+            // 找 writeTo 方法
+            Method writeToMethod = null;
+            for (Method m : body.getClass().getMethods()) {
+                if (m.getName().equals("writeTo") && m.getParameterTypes().length == 1) {
+                    writeToMethod = m;
+                    break;
+                }
+            }
+            if (writeToMethod == null) return;
+
+            // 创建 Buffer — 尝试多种类名
+            Class<?> bufferClass = null;
+            for (String name : new String[]{"okio.Buffer", "nu.e", "nu.f", "nu.g", "nu.h"}) {
+                try {
+                    Class<?> c = Class.forName(name);
+                    c.getMethod("readUtf8");
+                    // 检查是否可赋值给 writeTo 参数
+                    Class<?> sinkType = writeToMethod.getParameterTypes()[0];
+                    if (sinkType.isAssignableFrom(c)) {
+                        bufferClass = c;
+                        break;
+                    }
+                } catch (Throwable ignored) {}
+            }
+            if (bufferClass == null) return;
+
+            Object buffer = bufferClass.getDeclaredConstructor().newInstance();
+            writeToMethod.invoke(body, buffer);
+
+            Method readUtf8 = bufferClass.getMethod("readUtf8");
+            String bodyStr = (String) readUtf8.invoke(buffer);
+            if (bodyStr == null || bodyStr.length() < 5) return;
+
+            // 诊断日志
+            if (diagBodyLogCount.getAndIncrement() < 5) {
+                log("[DIAG] RequestBody writeTo (" + Math.min(200, bodyStr.length()) + " chars): " +
+                    bodyStr.substring(0, Math.min(200, bodyStr.length())));
+            }
+
+            // 提取 model
+            String model = extractModelFromJson(bodyStr);
+            if (model != null && !model.isEmpty()) {
+                String old = getCapture().getCapturedModel();
+                getCapture().setCapturedModel(model);
+                if (old == null || !old.equals(model)) {
+                    log("★★★ 捕获模型 ID (request body): " + model + " (url=" + urlStr + ")");
+                }
+            }
+        } catch (Throwable t) {
+            if (diagBodyLogCount.get() < 3) {
+                log("[DIAG] tryExtractModelFromRequest: " + t.getMessage());
+            }
+        }
+    }
+
+    /**
+     * v1.0.61: 从 JSON 字符串提取 "model" 字段值。
+     * 支持:
+     * - 标准 JSON: {"model": "glm-4", ...}
+     * - SSE 格式: data: {"model": "glm-4", ...}
+     * - 嵌套 JSON
+     */
+    private String extractModelFromJson(String str) {
+        if (str == null || !str.contains("\"model\"")) return null;
+        try {
+            // 尝试标准 JSON 解析
+            JSONObject json = new JSONObject(str);
+            String model = json.optString("model", null);
+            if (model != null && !model.isEmpty()) return model;
+        } catch (Throwable ignored) {}
+
+        // 尝试 SSE 格式 — 每行 "data: {...}"
+        try {
+            String[] lines = str.split("\n");
+            for (String line : lines) {
+                line = line.trim();
+                if (line.startsWith("data:") && line.contains("\"model\"")) {
+                    String jsonPart = line.substring(5).trim();
+                    if (jsonPart.startsWith("{")) {
+                        JSONObject json = new JSONObject(jsonPart);
+                        String model = json.optString("model", null);
+                        if (model != null && !model.isEmpty()) return model;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        // 最后尝试正则提取
+        try {
+            int idx = str.indexOf("\"model\"");
+            if (idx >= 0) {
+                // 找到 "model":"value" 或 "model": "value"
+                int colonIdx = str.indexOf(":", idx + 7);
+                if (colonIdx >= 0) {
+                    int startQuote = str.indexOf("\"", colonIdx + 1);
+                    if (startQuote >= 0) {
+                        int endQuote = str.indexOf("\"", startQuote + 1);
+                        if (endQuote >= 0) {
+                            return str.substring(startQuote + 1, endQuote);
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        return null;
     }
 
     private void captureRequest(Object call, ClassLoader cl) {
