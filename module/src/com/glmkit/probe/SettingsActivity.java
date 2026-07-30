@@ -354,9 +354,10 @@ public final class SettingsActivity extends Activity {
         root.addView(gwCtrlRow);
 
         TextView gwCtrlDesc = new TextView(this);
-        gwCtrlDesc.setText("启动：在 GLMKit 进程中启动网关（前台 Service 保活）\n"
-                + "停止：关闭网关并停止 Service\n"
-                + "重启：停止后重新启动（重新加载端口、API Key）");
+        gwCtrlDesc.setText("启动：在 GLMKit APP 进程中直接启动网关\n"
+                + "停止：关闭网关\n"
+                + "重启：停止后重新启动（重新加载端口、API Key）\n"
+                + "网关在 GLMKit APP 自身进程中运行，不依赖智谱清言");
         gwCtrlDesc.setTextSize(12f);
         gwCtrlDesc.setTextColor(0xFF666666);
         gwCtrlDesc.setPadding(16, 0, 0, 16);
@@ -558,67 +559,103 @@ public final class SettingsActivity extends Activity {
     }
 
     /**
-     * v1.0.41: 启动网关 — 启动前台 Service（在 GLMKit APP 自身进程中运行网关）
+     * v1.0.43: 直接在 Activity 进程中启动网关（不依赖前台 Service）。
+     * 同时尝试启动 Service 用于后台保活，但网关启动不依赖 Service。
      */
     private void startGateway() {
         Toast.makeText(this, "正在启动网关...", Toast.LENGTH_SHORT).show();
-        boolean ok = LocalApiKeepAliveService.setEnabled(this, true);
-        if (ok) {
-            keepAliveSwitch.setChecked(true);
-            saveKeepAlive(true);
-            // 延迟 2 秒检查网关是否真正启动
-            new Thread(() -> {
-                try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
-                final int port = getSavedPort();
-                String result = httpGet("http://127.0.0.1:" + port + "/healthz", 2000);
+        new Thread(() -> {
+            try {
+                int port = getSavedPort();
+                String apiKey = getPrefs().getString(KEY_API_KEY, null);
+
+                LocalApiGateway.setListenPort(port);
+                LocalApiGateway.setApiKey(apiKey);
+
+                if (!LocalApiGateway.isRunning()) {
+                    GlmCapture capture = new GlmCapture();
+                    capture.loadFromSharedFile();
+                    GlmBackend backend = new GlmBackend(capture);
+                    port = LocalApiGateway.start(this, backend);
+                    android.util.Log.i("GLMKit", "网关启动返回端口: " + port);
+                } else {
+                    android.util.Log.i("GLMKit", "网关已在运行");
+                }
+
+                final int finalPort = port;
+                Thread.sleep(1000);
+                String result = httpGet("http://127.0.0.1:" + finalPort + "/healthz", 2000);
                 runOnUiThread(() -> {
                     if (result != null) {
-                        Toast.makeText(this, "✅ 网关已启动 (端口 " + port + ")",
+                        Toast.makeText(this, "✅ 网关已启动 (端口 " + finalPort + ")",
                                 Toast.LENGTH_LONG).show();
+                        keepAliveSwitch.setChecked(true);
+                        saveKeepAlive(true);
                     } else {
-                        Toast.makeText(this, "⚠️ 网关启动失败，请查看日志\n"
-                                + "可能原因：\n"
-                                + "1. 通知权限未授予\n"
-                                + "2. 端口 " + port + " 被占用\n"
-                                + "3. Service 启动异常",
+                        Toast.makeText(this, "⚠️ 网关启动失败\n"
+                                + "端口: " + finalPort + "\n"
+                                + "请检查端口是否被占用",
                                 Toast.LENGTH_LONG).show();
                     }
                     refreshStatus();
                 });
-            }, "glmkit-start-check").start();
-        } else {
-            Toast.makeText(this, "⚠️ 启动失败：Service 无法启动", Toast.LENGTH_LONG).show();
-        }
-        refreshStatus();
+
+                // 同时尝试启动前台 Service（用于后台保活，失败不影响网关）
+                try { LocalApiKeepAliveService.setEnabled(this, true); } catch (Throwable ignored) {}
+
+            } catch (Throwable t) {
+                android.util.Log.e("GLMKit", "启动网关异常", t);
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "⚠️ 启动异常: " + t.getMessage(),
+                            Toast.LENGTH_LONG).show();
+                    refreshStatus();
+                });
+            }
+        }, "glmkit-start").start();
     }
 
     /**
-     * v1.0.41: 停止网关 — 停止前台 Service
+     * v1.0.43: 停止网关 — 直接停止 + 停止 Service
      */
     private void stopGateway() {
-        boolean ok = LocalApiKeepAliveService.setEnabled(this, false);
-        if (ok) {
-            Toast.makeText(this, "✅ 网关已停止", Toast.LENGTH_SHORT).show();
-            keepAliveSwitch.setChecked(false);
-            saveKeepAlive(false);
-        } else {
-            Toast.makeText(this, "⚠️ 停止失败", Toast.LENGTH_SHORT).show();
-        }
-        refreshStatus();
+        new Thread(() -> {
+            try { LocalApiGateway.stop(); } catch (Throwable ignored) {}
+            try { LocalApiKeepAliveService.setEnabled(this, false); } catch (Throwable ignored) {}
+            runOnUiThread(() -> {
+                Toast.makeText(this, "✅ 网关已停止", Toast.LENGTH_SHORT).show();
+                keepAliveSwitch.setChecked(false);
+                saveKeepAlive(false);
+                refreshStatus();
+            });
+        }, "glmkit-stop").start();
     }
 
     /**
-     * v1.0.41: 重启网关 — 停止后重新启动 Service
+     * v1.0.43: 重启网关 — 直接停止后重新启动
      */
     private void restartGateway() {
         Toast.makeText(this, "正在重启网关...", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
-            LocalApiKeepAliveService.setEnabled(this, false);
+            try { LocalApiGateway.stop(); } catch (Throwable ignored) {}
             try { Thread.sleep(500); } catch (InterruptedException ignored) {}
-            boolean ok = LocalApiKeepAliveService.setEnabled(this, true);
+
+            int port = getSavedPort();
+            String apiKey = getPrefs().getString(KEY_API_KEY, null);
+            LocalApiGateway.setListenPort(port);
+            LocalApiGateway.setApiKey(apiKey);
+
+            GlmCapture capture = new GlmCapture();
+            capture.loadFromSharedFile();
+            GlmBackend backend = new GlmBackend(capture);
+            int actualPort = LocalApiGateway.start(this, backend);
+
+            final int finalPort = actualPort;
+            try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
+            String result = httpGet("http://127.0.0.1:" + finalPort + "/healthz", 2000);
             runOnUiThread(() -> {
-                if (ok) {
-                    Toast.makeText(this, "✅ 网关已重启", Toast.LENGTH_SHORT).show();
+                if (result != null) {
+                    Toast.makeText(this, "✅ 网关已重启 (端口 " + finalPort + ")",
+                            Toast.LENGTH_LONG).show();
                     keepAliveSwitch.setChecked(true);
                     saveKeepAlive(true);
                 } else {
@@ -694,7 +731,7 @@ public final class SettingsActivity extends Activity {
             String result = httpGet("http://127.0.0.1:" + port + "/v1/diagnostic", 4000);
             runOnUiThread(() -> {
                 if (result == null) {
-                    diagResultText.setText("❌ 连接失败\n\n请确保：\n1. 模块已在 LSPosed 中激活\n2. 智谱清言已打开并运行\n3. 作用域已勾选智谱清言");
+                    diagResultText.setText("❌ 连接失败\n\n请点击「▶ 启动网关」按钮");
                     diagResultText.setTextColor(0xFFF44336);
                 } else {
                     diagResultText.setText("✅ 网关响应：\n\n" + result);
@@ -716,7 +753,7 @@ public final class SettingsActivity extends Activity {
             String result = httpGet("http://127.0.0.1:" + port + "/v1/models", 4000);
             runOnUiThread(() -> {
                 if (result == null) {
-                    diagResultText.setText("❌ 连接失败\n\n请确保智谱清言已打开且模块已激活");
+                    diagResultText.setText("❌ 连接失败\n\n请点击「▶ 启动网关」按钮");
                     diagResultText.setTextColor(0xFFF44336);
                 } else {
                     diagResultText.setText("✅ 模型列表：\n\n" + result);
@@ -791,10 +828,10 @@ public final class SettingsActivity extends Activity {
                     displayText = "❌ 无法获取日志\n\n" +
                             "网关未运行或无法连接 (http://127.0.0.1:" + port + "/v1/logs)\n" +
                             "日志文件不存在: " + logFile.getAbsolutePath() + "\n\n" +
-                            "请确保:\n" +
-                            "1. 模块已在 LSPosed 中激活\n" +
-                            "2. 智谱清言已打开（网关在智谱清言进程中运行）\n" +
-                            "3. 模块作用域已勾选智谱清言";
+                            "请尝试:\n" +
+                            "1. 点击「▶ 启动网关」按钮\n" +
+                            "2. 在 LSPosed 中激活模块并勾选智谱清言\n" +
+                            "3. 打开智谱清言（用于捕获 auth）";
                     textColor = 0xFFF44336;
                 }
             }
