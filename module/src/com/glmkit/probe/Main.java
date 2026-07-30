@@ -1,17 +1,29 @@
 package com.glmkit.probe;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.widget.Toast;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.PrintWriter;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
@@ -52,6 +64,18 @@ public class Main implements IXposedHookLoadPackage {
     private volatile Class<?> obfClientClass;
     private volatile Class<?> obfRequestClass;
     private volatile Class<?> obfHeadersClass;
+
+    // ════════════════════════════════════════════════════════════
+    //  日志缓冲区 + 文件写入
+    // ════════════════════════════════════════════════════════════
+    private static final int MAX_LOG_ENTRIES = 500;
+    private static final List<String> logBuffer =
+            Collections.synchronizedList(new ArrayList<>(MAX_LOG_ENTRIES));
+    private static volatile File logFile = null;
+    private static volatile PrintWriter logWriter = null;
+    private static final SimpleDateFormat logDateFormat =
+            new SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US);
+    private static volatile PowerManager.WakeLock wakeLock = null;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
@@ -755,6 +779,11 @@ public class Main implements IXposedHookLoadPackage {
     private void startGatewayWhenReady() {
         new Thread(() -> {
             try {
+                // 初始化日志文件
+                if (appContext != null) {
+                    initLogFile(appContext);
+                }
+
                 // 短暂等待 OkHttp 捕获（最多 3s），然后立即启动网关
                 int waited = 0;
                 while (getCapture().getOkHttpClient() == null && waited < 3_000) {
@@ -798,7 +827,11 @@ public class Main implements IXposedHookLoadPackage {
                 }
 
                 log("本地 API 网关已启动，实际端口: " + actualPort);
+                log("日志文件路径: " + getLogFilePath());
                 showToast("GLMKit 网关已启动，端口: " + actualPort);
+
+                // 启动前台通知保活 — 防止切换应用时进程被杀死
+                startForegroundKeepAlive(ctx);
 
                 Intent gatewayIntent = new Intent("com.glmkit.proxy.GATEWAY_STARTED");
                 gatewayIntent.setPackage("com.glmkit.proxy");
@@ -807,6 +840,14 @@ public class Main implements IXposedHookLoadPackage {
                     ctx.sendBroadcast(gatewayIntent);
                     log("发送网关启动广播");
                 } catch (Throwable ignored) {}
+
+                // 添加关闭钩子，记录进程退出
+                Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                    log("⚠️ 进程即将退出（shutdown hook）");
+                    if (wakeLock != null && wakeLock.isHeld()) {
+                        try { wakeLock.release(); } catch (Throwable ignored) {}
+                    }
+                }, "glmkit-shutdown-hook"));
 
             } catch (Throwable t) {
                 log("启动网关失败: " + t.getMessage());
@@ -848,7 +889,157 @@ public class Main implements IXposedHookLoadPackage {
     static ClassLoader getHostClassLoader() { return hostClassLoader; }
 
     static void log(String msg) {
-        XposedBridge.log("[" + TAG + "] " + msg);
+        String timestamped = logDateFormat.format(new Date()) + " " + msg;
+        String full = "[" + TAG + "] " + timestamped;
+        try { XposedBridge.log(full); } catch (Throwable ignored) {}
+
+        // 写入内存缓冲区
+        synchronized (logBuffer) {
+            if (logBuffer.size() >= MAX_LOG_ENTRIES) {
+                logBuffer.remove(0);
+            }
+            logBuffer.add(timestamped);
+        }
+
+        // 写入文件（best effort）
+        try {
+            if (logWriter != null) {
+                logWriter.println(timestamped);
+                logWriter.flush();
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** 获取日志缓冲区内容（用于 /v1/logs 端点） */
+    static String getLogBuffer() {
+        synchronized (logBuffer) {
+            StringBuilder sb = new StringBuilder();
+            for (String line : logBuffer) {
+                sb.append(line).append('\n');
+            }
+            return sb.toString();
+        }
+    }
+
+    /** 初始化日志文件写入 */
+    static void initLogFile(Context ctx) {
+        if (logWriter != null) return;
+        try {
+            // 尝试多个位置写入
+            File f = null;
+
+            // 位置1: /sdcard/glmkit_debug.log（需要存储权限）
+            File sdcard = new File("/sdcard/glmkit_debug.log");
+            try {
+                FileWriter fw = new FileWriter(sdcard, true);
+                fw.write("--- GLMKit log session " + logDateFormat.format(new Date()) + " ---\n");
+                fw.flush();
+                fw.close();
+                f = sdcard;
+            } catch (Throwable ignored) {}
+
+            // 位置2: 应用缓存目录（始终可写）
+            if (f == null && ctx != null) {
+                File cacheDir = ctx.getExternalCacheDir();
+                if (cacheDir == null) cacheDir = ctx.getCacheDir();
+                if (cacheDir != null) {
+                    File lf = new File(cacheDir, "glmkit_debug.log");
+                    FileWriter fw = new FileWriter(lf, true);
+                    fw.write("--- GLMKit log session " + logDateFormat.format(new Date()) + " ---\n");
+                    fw.flush();
+                    fw.close();
+                    f = lf;
+                }
+            }
+
+            if (f != null) {
+                logFile = f;
+                logWriter = new PrintWriter(new FileWriter(f, true), true);
+                log("日志文件: " + f.getAbsolutePath());
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** 获取日志文件路径（用于诊断） */
+    static String getLogFilePath() {
+        return logFile != null ? logFile.getAbsolutePath() : "未初始化";
+    }
+
+    /** 启动前台通知保活 — 防止目标应用进程被系统杀死 */
+    static void startForegroundKeepAlive(Context ctx) {
+        if (ctx == null) return;
+        try {
+            // 使用 WakeLock 防止 CPU 休眠
+            if (wakeLock == null) {
+                PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GLMKit:gateway");
+                wakeLock.setReferenceCounted(false);
+                wakeLock.acquire();
+                log("已获取 WakeLock (PARTIAL_WAKE_LOCK)");
+            }
+
+            // 显示常驻通知（提高进程优先级，减少被杀概率）
+            String channelId = "glmkit_gateway";
+            NotificationManager nm = (NotificationManager)
+                    ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationChannel channel = new NotificationChannel(
+                        channelId, "GLMKit 网关",
+                        NotificationManager.IMPORTANCE_LOW);
+                channel.setDescription("本地 API 网关运行中");
+                channel.setShowBadge(false);
+                nm.createNotificationChannel(channel);
+            }
+
+            Notification notification;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                notification = new Notification.Builder(ctx, channelId)
+                        .setContentTitle("GLMKit 网关运行中")
+                        .setContentText("本地 API 反代服务正在运行 (端口 " + LocalApiGateway.getListenPort() + ")")
+                        .setSmallIcon(android.R.drawable.ic_dialog_info)
+                        .setOngoing(true)
+                        .build();
+            } else {
+                notification = new Notification.Builder(ctx)
+                        .setContentTitle("GLMKit 网关运行中")
+                        .setContentText("本地 API 反代服务正在运行 (端口 " + LocalApiGateway.getListenPort() + ")")
+                        .setSmallIcon(android.R.drawable.ic_dialog_info)
+                        .setOngoing(true)
+                        .build();
+            }
+
+            nm.notify(1, notification);
+            log("已显示常驻通知（提高进程优先级）");
+
+            // 启动一个后台线程定期检查网关状态，保持进程活跃
+            new Thread(() -> {
+                while (LocalApiGateway.isRunning()) {
+                    try {
+                        Thread.sleep(30_000); // 每 30 秒检查一次
+                        if (LocalApiGateway.isRunning()) {
+                            log("保活心跳: 网关运行中, 连接数=" +
+                                    LocalApiGateway.connectionInfo());
+                        }
+                    } catch (InterruptedException e) {
+                        break;
+                    } catch (Throwable t) {
+                        log("保活心跳异常: " + t.getMessage());
+                    }
+                }
+                log("保活心跳线程退出（网关已停止）");
+                // 释放 WakeLock
+                if (wakeLock != null && wakeLock.isHeld()) {
+                    try { wakeLock.release(); } catch (Throwable ignored) {}
+                    log("已释放 WakeLock");
+                }
+                // 取消通知
+                try { nm.cancel(1); } catch (Throwable ignored) {}
+            }, "glmkit-keepalive-heartbeat").start();
+
+        } catch (Throwable t) {
+            log("前台保活启动失败: " + t.getMessage());
+        }
     }
 
     static void showToast(final String msg) {

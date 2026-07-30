@@ -288,6 +288,7 @@ public class LocalApiGateway {
         try {
             socket.setSoTimeout(120_000);
             socket.setKeepAlive(true);
+            log("收到连接: " + socket.getRemoteSocketAddress());
 
             InputStream is = socket.getInputStream();
             OutputStream os = socket.getOutputStream();
@@ -504,6 +505,12 @@ public class LocalApiGateway {
             return;
         }
 
+        // 日志端点 — 返回模块日志缓冲区
+        if ("GET".equals(method) && "/v1/logs".equals(path)) {
+            handleLogs(os);
+            return;
+        }
+
         // Chat Completions
         if ("POST".equals(method) && "/v1/chat/completions".equals(path)) {
             handleChatCompletions(headers, body, os);
@@ -585,6 +592,19 @@ public class LocalApiGateway {
             }
             if (tips.length() > 0) resp.put("tips", tips);
 
+        } catch (Exception ignored) {}
+        sendResponse(os, 200, "OK", "application/json", resp.toString());
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  /v1/logs
+    // ════════════════════════════════════════════════════════════
+    private static void handleLogs(OutputStream os) throws IOException {
+        JSONObject resp = new JSONObject();
+        try {
+            resp.put("module", "GLMKit");
+            resp.put("log_file", Main.getLogFilePath());
+            resp.put("logs", Main.getLogBuffer());
         } catch (Exception ignored) {}
         sendResponse(os, 200, "OK", "application/json", resp.toString());
     }

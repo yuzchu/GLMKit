@@ -357,6 +357,15 @@ public final class SettingsActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         tmParams.leftMargin = 16;
         diagRow.addView(testModelsBtn, tmParams);
+
+        Button viewLogsBtn = new Button(this);
+        viewLogsBtn.setText("📋 查看日志");
+        viewLogsBtn.setOnClickListener(v -> viewLogs());
+        LinearLayout.LayoutParams vlParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        vlParams.leftMargin = 16;
+        diagRow.addView(viewLogsBtn, vlParams);
         root.addView(diagRow);
 
         diagResultText = new TextView(this);
@@ -656,6 +665,88 @@ public final class SettingsActivity extends Activity {
                 }
             });
         }, "glmkit-models").start();
+    }
+
+    /**
+     * 查看模块日志 — 优先从网关 /v1/logs 获取，其次读取日志文件
+     */
+    private void viewLogs() {
+        final int port = getEffectiveGatewayPort();
+        diagResultText.setText("正在获取日志...");
+        diagResultText.setTextColor(0xFF666666);
+        diagResultText.setVisibility(View.VISIBLE);
+        new Thread(() -> {
+            // 方式1: 从网关 /v1/logs 端点获取
+            String result = httpGet("http://127.0.0.1:" + port + "/v1/logs", 5000);
+            String displayText;
+            int textColor;
+
+            if (result != null) {
+                // 解析 JSON 提取日志
+                try {
+                    org.json.JSONObject json = new org.json.JSONObject(result);
+                    String logs = json.optString("logs", "");
+                    String logFile = json.optString("log_file", "");
+                    if (logs.isEmpty()) {
+                        displayText = "⚠️ 网关在线但日志为空\n\n日志文件: " + logFile;
+                        textColor = 0xFFFF9800;
+                    } else {
+                        displayText = "📋 GLMKit 模块日志（来自网关）\n\n" + logs;
+                        textColor = 0xFF333333;
+                    }
+                } catch (Exception e) {
+                    displayText = "📋 网关日志响应:\n\n" + result;
+                    textColor = 0xFF333333;
+                }
+            } else {
+                // 方式2: 读取日志文件
+                StringBuilder fileLogs = new StringBuilder();
+                java.io.File logFile = new java.io.File("/sdcard/glmkit_debug.log");
+                if (logFile.exists()) {
+                    try {
+                        java.io.BufferedReader reader = new java.io.BufferedReader(
+                                new java.io.FileReader(logFile));
+                        String line;
+                        int count = 0;
+                        while ((line = reader.readLine()) != null) {
+                            fileLogs.append(line).append('\n');
+                            count++;
+                            if (count > 500) {
+                                fileLogs.append("... (日志过长，仅显示最后 500 行)\n");
+                                break;
+                            }
+                        }
+                        reader.close();
+                        if (fileLogs.length() > 0) {
+                            displayText = "📋 GLMKit 日志文件 (" + logFile.getAbsolutePath() + "):\n\n" + fileLogs.toString();
+                            textColor = 0xFF333333;
+                        } else {
+                            displayText = "⚠️ 日志文件为空\n\n路径: " + logFile.getAbsolutePath();
+                            textColor = 0xFFFF9800;
+                        }
+                    } catch (Exception e) {
+                        displayText = "❌ 读取日志文件失败: " + e.getMessage() + "\n\n路径: " + logFile.getAbsolutePath();
+                        textColor = 0xFFF44336;
+                    }
+                } else {
+                    displayText = "❌ 无法获取日志\n\n" +
+                            "网关未运行或无法连接 (http://127.0.0.1:" + port + "/v1/logs)\n" +
+                            "日志文件不存在: " + logFile.getAbsolutePath() + "\n\n" +
+                            "请确保:\n" +
+                            "1. 模块已在 LSPosed 中激活\n" +
+                            "2. 智谱清言已打开（网关在智谱清言进程中运行）\n" +
+                            "3. 模块作用域已勾选智谱清言";
+                    textColor = 0xFFF44336;
+                }
+            }
+
+            final String text = displayText;
+            final int color = textColor;
+            runOnUiThread(() -> {
+                diagResultText.setText(text);
+                diagResultText.setTextColor(color);
+            });
+        }, "glmkit-viewlogs").start();
     }
 
     /**
