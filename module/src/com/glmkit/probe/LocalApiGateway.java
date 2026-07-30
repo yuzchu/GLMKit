@@ -433,6 +433,16 @@ public class LocalApiGateway {
             return;
         }
 
+        // v1.0.68: 设置端点（不需要 API Key 验证）
+        if ("GET".equals(method) && "/v1/settings".equals(path)) {
+            handleGetSettings(os);
+            return;
+        }
+        if ("POST".equals(method) && "/v1/settings/auto-delete".equals(path)) {
+            handleToggleAutoDelete(body, os);
+            return;
+        }
+
         // 健康检查
         if ("GET".equals(method) && "/healthz".equals(path)) {
             JSONObject health = new JSONObject();
@@ -560,6 +570,19 @@ public class LocalApiGateway {
     //  持久化模型列表 — SharedPreferences
     // ════════════════════════════════════════════════════════════
     private static final String PREF_MODELS_KEY = "custom_models";
+    private static final String PREF_AUTO_DELETE_CONV = "auto_delete_conversation";
+
+    /** v1.0.68: 读取自动删除会话设置 */
+    static boolean isAutoDeleteConversation() {
+        if (context == null) return false;
+        try {
+            SharedPreferences prefs = context.getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE);
+            return prefs.getBoolean(PREF_AUTO_DELETE_CONV, false);
+        } catch (Throwable t) {
+            log("读取 auto_delete_conversation 失败: " + t.getMessage());
+            return false;
+        }
+    }
 
     private static java.util.List<String> getPersistentModels() {
         java.util.List<String> models = new java.util.ArrayList<>();
@@ -714,6 +737,49 @@ public class LocalApiGateway {
     // ════════════════════════════════════════════════════════════
     //  /v1/models
     // ════════════════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════════
+    //  v1.0.68: 设置端点
+    // ════════════════════════════════════════════════════════════
+    private static void handleGetSettings(OutputStream os) throws IOException {
+        JSONObject resp = new JSONObject();
+        try {
+            resp.put("auto_delete_conversation", isAutoDeleteConversation());
+        } catch (Exception ignored) {}
+        sendResponse(os, 200, "OK", "application/json", resp.toString());
+    }
+
+    private static void handleToggleAutoDelete(byte[] body, OutputStream os) throws IOException {
+        JSONObject resp = new JSONObject();
+        try {
+            // 解析请求体 {enabled: true/false}
+            boolean enabled = false;
+            if (body != null && body.length > 0) {
+                String bodyStr = new String(body, StandardCharsets.UTF_8).trim();
+                if (!bodyStr.isEmpty()) {
+                    JSONObject req = new JSONObject(bodyStr);
+                    enabled = req.optBoolean("enabled", false);
+                }
+            }
+            // 写入 SharedPreferences
+            if (context != null) {
+                SharedPreferences prefs = context.getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE);
+                prefs.edit().putBoolean(PREF_AUTO_DELETE_CONV, enabled).apply();
+                log("auto_delete_conversation 设置为: " + enabled);
+            }
+            resp.put("success", true);
+            resp.put("auto_delete_conversation", enabled);
+            resp.put("message", enabled ? "已开启自动删除会话" : "已关闭自动删除会话");
+        } catch (Exception e) {
+            try {
+                resp.put("success", false);
+                resp.put("message", "设置失败: " + e.getMessage());
+            } catch (Exception ignored) {}
+            sendResponse(os, 500, "Internal Server Error", "application/json", resp.toString());
+            return;
+        }
+        sendResponse(os, 200, "OK", "application/json", resp.toString());
+    }
+
     private static void handleListModels(OutputStream os) throws IOException {
         JSONObject resp = new JSONObject();
         try {
@@ -1168,6 +1234,15 @@ public class LocalApiGateway {
             + "<div class=\"row\"><button class=\"success\" onclick=\"captureModel()\">📥 捕获当前模型</button></div>"
             + "</div>"
 
+            // 设置区 v1.0.68
+            + "<div class=\"card\"><h2>设置</h2>"
+            + "<div class=\"row\"><label style=\"cursor:pointer;font-size:14px\">"
+            + "<input type=\"checkbox\" id=\"autoDeleteConv\" style=\"width:auto;margin-right:6px\""
+            + " onchange=\"toggleAutoDelete()\">对话后自动删除会话"
+            + "</label></div>"
+            + "<div class=\"status\" id=\"autoDeleteStatus\"></div>"
+            + "</div>"
+
             // 模型列表
             + "<div class=\"card\"><h2>模型列表</h2>"
             + "<div id=\"modelList\"></div>"
@@ -1208,6 +1283,27 @@ public class LocalApiGateway {
             + "}).catch(e=>{});"
 
             + "loadModels();"
+            + "loadSettings();"
+            + "}"
+
+            // v1.0.68: 加载设置
+            + "function loadSettings(){"
+            + "fetch(B+'/v1/settings').then(r=>r.json()).then(d=>{"
+            + "let cb=document.getElementById('autoDeleteConv');"
+            + "cb.checked=!!d.auto_delete_conversation;"
+            + "let st=document.getElementById('autoDeleteStatus');"
+            + "st.innerHTML=cb.checked?'<span class=warn>⚠️ 已开启：每次对话后自动删除会话</span>':'<span class=status>已关闭：对话后保留会话</span>';"
+            + "}).catch(e=>{});"
+            + "}"
+
+            // v1.0.68: 切换自动删除
+            + "function toggleAutoDelete(){"
+            + "let cb=document.getElementById('autoDeleteConv');"
+            + "fetch(B+'/v1/settings/auto-delete',{method:'POST',headers:auth({'Content-Type':'application/json'}),"
+            + "body:JSON.stringify({enabled:cb.checked})}).then(r=>r.json()).then(d=>{"
+            + "let st=document.getElementById('autoDeleteStatus');"
+            + "st.innerHTML=cb.checked?'<span class=warn>⚠️ 已开启：每次对话后自动删除会话</span>':'<span class=status>已关闭：对话后保留会话</span>';"
+            + "}).catch(e=>{alert('设置失败: '+e);cb.checked=!cb.checked;});"
             + "}"
 
             // 加载模型列表

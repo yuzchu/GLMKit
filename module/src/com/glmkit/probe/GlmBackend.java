@@ -26,6 +26,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
 
     private final GlmCapture capture;
     private volatile String lastError = null;
+    private volatile String lastConversationId = null; // v1.0.68: 从 SSE 响应捕获
 
     public GlmBackend(GlmCapture capture) {
         this.capture = capture;
@@ -167,12 +168,195 @@ public class GlmBackend implements LocalApiGateway.Backend {
             }
             // 成功路径也确保关闭 response body
             closeResponseBodyQuietly(response);
+
+            // v1.0.68: 自动删除会话
+            tryAutoDeleteConversation();
+
             return result;
         } catch (Exception e) {
             // 确保异常时关闭 response body 防止连接泄漏
             closeResponseBodyQuietly(response);
             throw e;
         }
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  v1.0.68: 会话自动删除
+    // ════════════════════════════════════════════════════════════
+
+    /** 检查设置并在开启时删除会话 */
+    private void tryAutoDeleteConversation() {
+        String convId = lastConversationId;
+        if (convId == null || convId.isEmpty()) {
+            log("自动删除: 无 conversation_id，跳过");
+            return;
+        }
+        // 读取设置（通过 LocalApiGateway 静态方法）
+        boolean autoDelete = LocalApiGateway.isAutoDeleteConversation();
+        if (!autoDelete) {
+            log("自动删除: 开关关闭，跳过 (convId=" + truncate(convId, 20) + ")");
+            return;
+        }
+        log("自动删除: 开关开启，删除会话 " + truncate(convId, 20) + "...");
+        deleteConversation(convId);
+    }
+
+    /** 调用 GLM API 删除指定会话 */
+    private void deleteConversation(String conversationId) {
+        try {
+            // 构造删除 URL: /backend-api/assistant/conversation/{id}
+            String base = capture.getBestBaseUrl();
+            if (base == null) {
+                base = "https://chatglm.cn/chatglm";
+            }
+            if (base.endsWith("/")) {
+                base = base.substring(0, base.length() - 1);
+            }
+            // 去掉可能的 /backend-api/assistant/stream 后缀
+            int apiIdx = base.indexOf("/backend-api/");
+            if (apiIdx > 0) {
+                base = base.substring(0, apiIdx);
+            }
+            String deleteUrl = base + "/backend-api/assistant/conversation/" + conversationId;
+            log("删除会话 URL: " + deleteUrl);
+
+            Object client = capture.getOkHttpClient();
+            if (client == null) {
+                log("删除会话: OkHttpClient 为 null，跳过");
+                return;
+            }
+
+            String clientClassName = client.getClass().getName();
+            if (clientClassName.equals("okhttp3.OkHttpClient")
+                    || clientClassName.equals("com.squareup.okhttp.OkHttpClient")) {
+                executeDeleteStandard(client, deleteUrl);
+            } else {
+                executeDeleteObfuscated(client, deleteUrl);
+            }
+        } catch (Throwable t) {
+            log("删除会话异常: " + t.getMessage());
+        }
+    }
+
+    /** 标准 OkHttp DELETE 请求 */
+    private void executeDeleteStandard(Object client, String url) throws Exception {
+        ClassLoader cl = client.getClass().getClassLoader();
+        Class<?> builderClass = cl.loadClass("okhttp3.Request$Builder");
+        Class<?> requestClass = cl.loadClass("okhttp3.Request");
+
+        Object requestBuilder = builderClass.getDeclaredConstructor().newInstance();
+        Method urlMethod = builderClass.getMethod("url", String.class);
+        urlMethod.invoke(requestBuilder, url);
+
+        // DELETE 方法 (无 body)
+        Method deleteMethod = builderClass.getMethod("delete");
+        deleteMethod.invoke(requestBuilder);
+
+        // 添加认证头
+        Method headerMethod = builderClass.getMethod("header", String.class, String.class);
+        addAuthHeaders(requestBuilder, headerMethod);
+
+        Method buildMethod = builderClass.getMethod("build");
+        Object request = buildMethod.invoke(requestBuilder);
+
+        Method newCallMethod = client.getClass().getMethod("newCall", requestClass);
+        Object call = newCallMethod.invoke(client, request);
+        Method executeMethod = call.getClass().getMethod("execute");
+        Object response = executeMethod.invoke(call);
+
+        int code = getResponseCode(response);
+        log("删除会话响应码: " + code);
+        closeResponseBodyQuietly(response);
+    }
+
+    /** 混淆 OkHttp DELETE 请求 */
+    private void executeDeleteObfuscated(Object client, String url) throws Exception {
+        ClassLoader cl = client.getClass().getClassLoader();
+        // 混淆类名: Request$a → Builder, url→j/g, delete→d, build→b, newCall→b
+        Class<?> builderClass = cl.loadClass("okhttp3.Request$a");
+        Class<?> requestClass = cl.loadClass("okhttp3.Request");
+
+        Object requestBuilder = builderClass.getDeclaredConstructor().newInstance();
+
+        // url 方法
+        Method urlMethod = null;
+        for (Method m : builderClass.getMethods()) {
+            if (m.getName().equals("j") || m.getName().equals("g")
+                    || (m.getParameterTypes().length == 1
+                        && m.getParameterTypes()[0] == String.class
+                        && m.getReturnType() == builderClass)) {
+                if (m.getName().length() == 1) { urlMethod = m; break; }
+            }
+        }
+        if (urlMethod == null) {
+            throw new RuntimeException("找不到混淆 url 方法");
+        }
+        urlMethod.invoke(requestBuilder, url);
+
+        // delete 方法 (无参数)
+        Method deleteMethod = null;
+        for (Method m : builderClass.getMethods()) {
+            if (m.getParameterTypes().length == 0 && m.getReturnType() == builderClass
+                    && !m.getName().equals("b") && !m.getName().equals("toString")) {
+                deleteMethod = m;
+                break;
+            }
+        }
+        if (deleteMethod == null) {
+            // 回退: 用 method("DELETE", null)
+            Method methodMethod = null;
+            for (Method m : builderClass.getMethods()) {
+                if (m.getParameterTypes().length == 2
+                        && m.getParameterTypes()[0] == String.class
+                        && m.getReturnType() == builderClass) {
+                    methodMethod = m;
+                    break;
+                }
+            }
+            if (methodMethod != null) {
+                methodMethod.invoke(requestBuilder, "DELETE", null);
+            } else {
+                throw new RuntimeException("找不到混淆 delete/method 方法");
+            }
+        } else {
+            deleteMethod.invoke(requestBuilder);
+        }
+
+        // 添加认证头
+        addAuthHeadersObfuscated(requestBuilder);
+
+        // build
+        Method buildMethod = builderClass.getMethod("b");
+        Object request = buildMethod.invoke(requestBuilder);
+
+        // newCall
+        Method newCallMethod = client.getClass().getMethod("b", requestClass);
+        Object call = newCallMethod.invoke(client, request);
+        Method executeMethod = call.getClass().getMethod("execute");
+        Object response = executeMethod.invoke(call);
+
+        int code = getResponseCode(response);
+        log("删除会话响应码(混淆): " + code);
+        closeResponseBodyQuietly(response);
+    }
+
+    /** 混淆版添加认证头 */
+    private void addAuthHeadersObfuscated(Object builder) throws Exception {
+        // 尝试找到 header 方法 (String, String) → Builder
+        Method headerMethod = null;
+        for (Method m : builder.getClass().getMethods()) {
+            if (m.getParameterTypes().length == 2
+                    && m.getParameterTypes()[0] == String.class
+                    && m.getParameterTypes()[1] == String.class
+                    && m.getReturnType() == builder.getClass()) {
+                if (m.getName().length() == 1) { headerMethod = m; break; }
+            }
+        }
+        if (headerMethod == null) {
+            log("混淆 header 方法未找到，跳过认证头");
+            return;
+        }
+        addAuthHeaders(builder, headerMethod);
     }
 
     // ════════════════════════════════════════════════════════════
@@ -946,6 +1130,12 @@ public class GlmBackend implements LocalApiGateway.Backend {
 
             try {
                 JSONObject event = new JSONObject(data);
+
+                // v1.0.68: 捕获 conversation_id（SSE 事件中包含）
+                String convId = event.optString("conversation_id", "");
+                if (!convId.isEmpty()) {
+                    lastConversationId = convId;
+                }
 
                 // GLM 格式: parts 数组
                 JSONArray parts = event.optJSONArray("parts");
