@@ -129,6 +129,9 @@ public class Main implements IXposedHookLoadPackage {
         // 8. v1.0.62: Hook WebSocket — 聊天可能用 WebSocket 而非 HTTP
         hookWebSocket(lpparam.classLoader);
 
+        // 9. v1.0.62: Hook RequestBody.writeTo — 直接拦截请求体写入
+        hookRequestBodyWriteTo(lpparam.classLoader);
+
         log("所有 hook 安装完成");
     }
 
@@ -1206,6 +1209,70 @@ public class Main implements IXposedHookLoadPackage {
     }
 
     // ════════════════════════════════════════════════════════════
+    //  v1.0.62: Hook RequestBody.writeTo — 直接拦截请求体写入网络
+    //  这是最可靠的方式，无论请求体如何创建都能拦截
+    // ════════════════════════════════════════════════════════════
+    private void hookRequestBodyWriteTo(ClassLoader cl) {
+        // hook okhttp3.RequestBody.writeTo(BufferedSink)
+        for (String className : new String[]{
+                "okhttp3.RequestBody",
+                "nu.r", "nu.s", "nu.t", "nu.u", "nu.v", "nu.w", "nu.x"}) {
+            try {
+                Class<?> bodyClass = cl.loadClass(className);
+                // 找 writeTo 方法 — 参数是 BufferedSink
+                Method writeToMethod = null;
+                for (Method m : bodyClass.getDeclaredMethods()) {
+                    if (m.getName().equals("writeTo") && m.getParameterTypes().length == 1) {
+                        writeToMethod = m;
+                        break;
+                    }
+                }
+                if (writeToMethod == null) continue;
+
+                XposedHelpers.findAndHookMethod(bodyClass, "writeTo", writeToMethod.getParameterTypes()[0],
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                // 获取写入的 sink，尝试读取内容
+                                Object sink = param.args[0];
+                                if (sink == null) return;
+
+                                // 尝试从 sink 读取 — 如果是 Buffer 可以直接 readUtf8
+                                String bodyStr = null;
+                                try {
+                                    // 如果 sink 本身是 Buffer
+                                    Method readUtf8 = sink.getClass().getMethod("readUtf8");
+                                    bodyStr = (String) readUtf8.invoke(sink);
+                                } catch (Throwable ignored) {}
+
+                                if (bodyStr == null || bodyStr.length() < 5) return;
+
+                                // 诊断日志（前 10 条）
+                                if (diagBodyLogCount.getAndIncrement() < 10) {
+                                    log("[DIAG] RequestBody.writeTo (" + Math.min(300, bodyStr.length()) + " chars): " +
+                                        bodyStr.substring(0, Math.min(300, bodyStr.length())));
+                                }
+
+                                // 提取 assistant_id 或 model
+                                String model = extractModelFromJson(bodyStr);
+                                if (model != null && !model.isEmpty()) {
+                                    String old = getCapture().getCapturedModel();
+                                    getCapture().setCapturedModel(model);
+                                    if (old == null || !old.equals(model)) {
+                                        log("★★★ 捕获模型 ID (writeTo): " + model);
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
+                        }
+                    });
+                log("✓ 安装 RequestBody.writeTo hook (" + className + ")");
+                break;
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════
     //  v1.0.53: Hook RequestBody.create — 拦截请求体，提取真实 model ID
     // ════════════════════════════════════════════════════════════
     private void hookRequestBodyCreate(ClassLoader cl) {
@@ -1549,6 +1616,10 @@ public class Main implements IXposedHookLoadPackage {
      */
     private void tryExtractModelFromRequest(Object request, String urlStr) {
         try {
+            // v1.0.62: 诊断 — 确认方法被调用
+            if (diagBodyLogCount.get() < 10) {
+                log("[DIAG] tryExtractModelFromRequest: " + urlStr);
+            }
             // 获取 body
             Method bodyMethod = null;
             for (Method m : request.getClass().getMethods()) {
