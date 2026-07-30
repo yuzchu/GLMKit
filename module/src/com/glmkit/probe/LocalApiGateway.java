@@ -1216,6 +1216,7 @@ public class LocalApiGateway {
             + "button.danger{background:#e94560}button.danger:hover{background:#c81e3a}"
             + "button.success{background:#0f0;color:#000}button.success:hover{background:#0c0}"
             + "input,textarea{width:100%;background:#0a0f1e;color:#eee;border:1px solid #333;border-radius:4px;padding:8px;font-size:14px}"
+            + "input[type=checkbox]{width:18px;height:18px;accent-color:#0f0;margin:0 6px 0 0;padding:0;border:none;background:auto;cursor:pointer;vertical-align:middle}"
             + "textarea{resize:vertical;min-height:60px}"
             + ".row{display:flex;gap:8px;align-items:center;margin:6px 0}"
             + ".row button{white-space:nowrap}"
@@ -1226,6 +1227,7 @@ public class LocalApiGateway {
             + ".ok{color:#0f0}.err{color:#e94560}.warn{color:#fa0}"
             + "</style></head><body>"
             + "<h1>GLMKit 控制面板</h1>"
+            + "<div class=\"status\" style=\"text-align:center;color:#666;font-size:12px\">v1.0.70</div>"
 
             // 状态区
             + "<div class=\"card\"><h2>状态</h2>"

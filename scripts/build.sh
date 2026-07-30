@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MODULE_DIR="${PROJECT_DIR}/module"
 BUILD_DIR="${PROJECT_DIR}/build"
-APK_NAME="glmkit-v1.0.69.apk"
+APK_NAME="glmkit-v1.0.70.apk"
 
 # ── Android SDK 路径 ──────────────────────────────────────────
 ANDROID_JAR="${ANDROID_JAR:-}"

@@ -27,6 +27,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
     private final GlmCapture capture;
     private volatile String lastError = null;
     private volatile String lastConversationId = null; // v1.0.68: 从 SSE 响应捕获
+    private int sseLogCount = 0; // v1.0.70: SSE 原始日志计数
 
     public GlmBackend(GlmCapture capture) {
         this.capture = capture;
@@ -227,19 +228,147 @@ public class GlmBackend implements LocalApiGateway.Backend {
             }
 
             String clientClassName = client.getClass().getName();
-            if (clientClassName.equals("okhttp3.OkHttpClient")
-                    || clientClassName.equals("com.squareup.okhttp.OkHttpClient")) {
-                executeDeleteStandard(client, deleteUrl);
+            int respCode = -1;
+
+            // v1.0.70: 先试 DELETE 方法
+            try {
+                if (clientClassName.equals("okhttp3.OkHttpClient")
+                        || clientClassName.equals("com.squareup.okhttp.OkHttpClient")) {
+                    respCode = executeDeleteStandard(client, deleteUrl);
+                } else {
+                    respCode = executeDeleteObfuscated(client, deleteUrl);
+                }
+            } catch (Throwable t) {
+                log("删除会话 DELETE 异常: " + t.getMessage());
+            }
+
+            // v1.0.70: DELETE 失败时 (非 2xx)，尝试 POST + body fallback
+            if (respCode < 200 || respCode >= 300) {
+                log("DELETE 返回 " + respCode + "，尝试 POST fallback...");
+                String postUrl = base + "/backend-api/assistant/conversation/delete";
+                try {
+                    if (clientClassName.equals("okhttp3.OkHttpClient")
+                            || clientClassName.equals("com.squareup.okhttp.OkHttpClient")) {
+                        respCode = executePostDeleteStandard(client, postUrl, conversationId);
+                    } else {
+                        respCode = executePostDeleteObfuscated(client, postUrl, conversationId);
+                    }
+                } catch (Throwable t) {
+                    log("删除会话 POST fallback 异常: " + t.getMessage());
+                }
+            }
+
+            if (respCode >= 200 && respCode < 300) {
+                log("✓ 删除会话成功 (code=" + respCode + ")");
             } else {
-                executeDeleteObfuscated(client, deleteUrl);
+                log("✗ 删除会话失败 (code=" + respCode + ")");
             }
         } catch (Throwable t) {
             log("删除会话异常: " + t.getMessage());
         }
     }
 
-    /** 标准 OkHttp DELETE 请求 */
-    private void executeDeleteStandard(Object client, String url) throws Exception {
+    /** 标准 OkHttp POST 删除请求 (fallback) */
+    private int executePostDeleteStandard(Object client, String url, String conversationId) throws Exception {
+        ClassLoader cl = client.getClass().getClassLoader();
+        Class<?> builderClass = cl.loadClass("okhttp3.Request$Builder");
+        Class<?> requestClass = cl.loadClass("okhttp3.Request");
+        Class<?> mediaTypeClass = cl.loadClass("okhttp3.MediaType");
+        Class<?> bodyClass = cl.loadClass("okhttp3.RequestBody");
+
+        Object requestBuilder = builderClass.getDeclaredConstructor().newInstance();
+        Method urlMethod = builderClass.getMethod("url", String.class);
+        urlMethod.invoke(requestBuilder, url);
+
+        // POST body: {"conversation_id":"xxx"}
+        String jsonBody = "{\"conversation_id\":\"" + conversationId + "\"}";
+        Method parseMethod = mediaTypeClass.getMethod("parse", String.class);
+        Object mediaType = parseMethod.invoke(null, "application/json; charset=utf-8");
+        Method createMethod = bodyClass.getMethod("create", mediaTypeClass, String.class);
+        Object body = createMethod.invoke(null, mediaType, jsonBody);
+        Method postMethod = builderClass.getMethod("post", bodyClass);
+        postMethod.invoke(requestBuilder, body);
+
+        Method headerMethod = builderClass.getMethod("header", String.class, String.class);
+        addAuthHeaders(requestBuilder, headerMethod);
+
+        Method buildMethod = builderClass.getMethod("build");
+        Object request = buildMethod.invoke(requestBuilder);
+
+        Method newCallMethod = client.getClass().getMethod("newCall", requestClass);
+        Object call = newCallMethod.invoke(client, request);
+        Method executeMethod = call.getClass().getMethod("execute");
+        Object response = executeMethod.invoke(call);
+
+        int code = getResponseCode(response);
+        log("删除会话 POST 响应码: " + code);
+        closeResponseBodyQuietly(response);
+        return code;
+    }
+
+    /** 混淆 OkHttp POST 删除请求 (fallback) */
+    private int executePostDeleteObfuscated(Object client, String url, String conversationId) throws Exception {
+        ClassLoader cl = client.getClass().getClassLoader();
+        Class<?> builderClass = cl.loadClass("okhttp3.Request$a");
+        Class<?> requestClass = cl.loadClass("okhttp3.Request");
+
+        Object requestBuilder = builderClass.getDeclaredConstructor().newInstance();
+
+        // url 方法
+        Method urlMethod = null;
+        for (Method m : builderClass.getMethods()) {
+            if (m.getParameterTypes().length == 1
+                    && m.getParameterTypes()[0] == String.class
+                    && m.getReturnType() == builderClass) {
+                if (m.getName().length() == 1) { urlMethod = m; break; }
+            }
+        }
+        if (urlMethod != null) {
+            urlMethod.invoke(requestBuilder, url);
+        }
+
+        // POST body
+        String jsonBody = "{\"conversation_id\":\"" + conversationId + "\"}";
+        Class<?> mediaTypeClass = cl.loadClass("okhttp3.MediaType");
+        Class<?> bodyClass = cl.loadClass("okhttp3.RequestBody");
+        Method parseMethod = mediaTypeClass.getMethod("parse", String.class);
+        Object mediaType = parseMethod.invoke(null, "application/json; charset=utf-8");
+        Method createMethod = bodyClass.getMethod("create", mediaTypeClass, String.class);
+        Object body = createMethod.invoke(null, mediaType, jsonBody);
+
+        // post 方法
+        Method postMethod = null;
+        for (Method m : builderClass.getMethods()) {
+            if (m.getParameterTypes().length == 1
+                    && m.getReturnType() == builderClass) {
+                Class<?> paramType = m.getParameterTypes()[0];
+                if (paramType.getName().contains("RequestBody")) {
+                    postMethod = m; break;
+                }
+            }
+        }
+        if (postMethod != null) {
+            postMethod.invoke(requestBuilder, body);
+        }
+
+        addAuthHeadersObfuscated(requestBuilder);
+
+        Method buildMethod = builderClass.getMethod("b");
+        Object request = buildMethod.invoke(requestBuilder);
+
+        Method newCallMethod = client.getClass().getMethod("b", requestClass);
+        Object call = newCallMethod.invoke(client, request);
+        Method executeMethod = call.getClass().getMethod("execute");
+        Object response = executeMethod.invoke(call);
+
+        int code = getResponseCode(response);
+        log("删除会话 POST 响应码(混淆): " + code);
+        closeResponseBodyQuietly(response);
+        return code;
+    }
+
+    /** 标准 OkHttp DELETE 请求，返回 response code */
+    private int executeDeleteStandard(Object client, String url) throws Exception {
         ClassLoader cl = client.getClass().getClassLoader();
         Class<?> builderClass = cl.loadClass("okhttp3.Request$Builder");
         Class<?> requestClass = cl.loadClass("okhttp3.Request");
@@ -265,12 +394,13 @@ public class GlmBackend implements LocalApiGateway.Backend {
         Object response = executeMethod.invoke(call);
 
         int code = getResponseCode(response);
-        log("删除会话响应码: " + code);
+        log("删除会话 DELETE 响应码: " + code);
         closeResponseBodyQuietly(response);
+        return code;
     }
 
-    /** 混淆 OkHttp DELETE 请求 */
-    private void executeDeleteObfuscated(Object client, String url) throws Exception {
+    /** 混淆 OkHttp DELETE 请求，返回 response code */
+    private int executeDeleteObfuscated(Object client, String url) throws Exception {
         ClassLoader cl = client.getClass().getClassLoader();
         // 混淆类名: Request$a → Builder, url→j/g, delete→d, build→b, newCall→b
         Class<?> builderClass = cl.loadClass("okhttp3.Request$a");
@@ -336,8 +466,9 @@ public class GlmBackend implements LocalApiGateway.Backend {
         Object response = executeMethod.invoke(call);
 
         int code = getResponseCode(response);
-        log("删除会话响应码(混淆): " + code);
+        log("删除会话 DELETE 响应码(混淆): " + code);
         closeResponseBodyQuietly(response);
+        return code;
     }
 
     /** 混淆版添加认证头 */
@@ -1092,6 +1223,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
             Object response, LocalApiGateway.CompletionRequest req,
             LocalApiGateway.DeltaSink sink) throws Exception {
 
+        sseLogCount = 0; // v1.0.70: 重置 SSE 日志计数
         InputStream is = readResponseBodyStream(response);
         if (is == null) {
             throw new LocalApiGateway.GatewayException(502, "no_stream",
@@ -1131,10 +1263,34 @@ public class GlmBackend implements LocalApiGateway.Backend {
             try {
                 JSONObject event = new JSONObject(data);
 
-                // v1.0.68: 捕获 conversation_id（SSE 事件中包含）
+                // v1.0.70: 捕获 conversation_id — 尝试多个可能的字段名
                 String convId = event.optString("conversation_id", "");
+                if (convId.isEmpty()) convId = event.optString("conv_id", "");
+                if (convId.isEmpty()) convId = event.optString("id", "");
+                if (convId.isEmpty()) {
+                    // 尝试嵌套在 meta/data 对象中
+                    JSONObject meta = event.optJSONObject("meta");
+                    if (meta != null) {
+                        convId = meta.optString("conversation_id", "");
+                        if (convId.isEmpty()) convId = meta.optString("conv_id", "");
+                    }
+                }
                 if (!convId.isEmpty()) {
                     lastConversationId = convId;
+                }
+
+                // v1.0.70: 前3条 SSE 原始日志（帮助调试 conversation_id 位置）
+                if (sseLogCount < 3) {
+                    sseLogCount++;
+                    log("SSE[" + sseLogCount + "] raw: " + truncate(data, 500));
+                    StringBuilder keys = new StringBuilder("[");
+                    java.util.Iterator<String> it = event.keys();
+                    while (it.hasNext()) { keys.append(it.next()).append(","); }
+                    keys.append("]");
+                    log("SSE[" + sseLogCount + "] keys: " + keys);
+                    if (!convId.isEmpty()) {
+                        log("SSE[" + sseLogCount + "] ✓ conversation_id=" + truncate(convId, 30));
+                    }
                 }
 
                 // GLM 格式: parts 数组
