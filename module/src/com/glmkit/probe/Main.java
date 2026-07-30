@@ -219,27 +219,66 @@ public class Main implements IXposedHookLoadPackage {
             return;
         }
 
-        // v1.0.71: 按 Android user ID 偏移端口，支持分身/工作资料多实例
-        // 主用户 (user 0) → 16766, 分身 (user 999) → 17765, 工作资料 (user 10) → 16776
+        // v1.0.72: 双重端口检测，支持分身/工作资料/同 user 虚拟化
+        // 1) Android user ID: 主用户0→16766, 分身999→17765, 工作资料10→16776
+        // 2) 进程名后缀: 同 user 内分身(如 :clone, :dual) 按后缀 hash 额外偏移
         int userId = android.os.Process.myUid() / 100000;
-        int port = 16766 + userId;
+        int portOffset = userId;
+
+        // 读取进程名，检测同 user 内的分身
+        String processName = readProcessName();
+        String pkgName = appContext.getPackageName();
+        String processSuffix = null;
+        if (processName != null && !processName.equals(pkgName) && processName.startsWith(pkgName + ":")) {
+            processSuffix = processName.substring(pkgName.length() + 1);
+            // 后缀 hash → 正数偏移 (避开 user ID 范围, 加 10000)
+            int suffixHash = Math.abs(processSuffix.hashCode()) % 1000;
+            portOffset += 10000 + suffixHash;
+            log("检测到进程后缀: '" + processSuffix + "' → 额外偏移 " + (10000 + suffixHash));
+        }
+
+        int port = 16766 + portOffset;
         LocalApiGateway.setListenPort(port);
-        log("分身支持: userId=" + userId + " → 端口=" + port);
+        log("╔══ 分身诊断 ═══════════════════════════════");
+        log("║ UID=" + android.os.Process.myUid() + " | userId=" + userId);
+        log("║ 进程名=" + processName);
+        log("║ 包名=" + pkgName + (processSuffix != null ? " (后缀:" + processSuffix + ")" : ""));
+        log("║ 端口=" + port + (processSuffix != null ? " (user+suffix)" : userId > 0 ? " (user偏移)" : " (默认)"));
+        log("╚══════════════════════════════════════════════");
 
         try {
             GlmBackend backend = new GlmBackend(getCapture());
             int actualPort = LocalApiGateway.start(appContext, backend);
             if (actualPort > 0) {
-                log("★★★ 网关已在智谱清言进程内启动，端口: " + actualPort + " (userId=" + userId + ") ★★★");
+                log("★★★ 网关已启动 端口:" + actualPort + " (userId=" + userId + (processSuffix != null ? " suffix=" + processSuffix : "") + ") ★★★");
                 showToast("GLMKit 网关已启动 (端口 " + actualPort + ")");
             } else {
                 log("网关启动失败，端口 <= 0");
-                gatewayStarted.set(false); // 允许重试
+                gatewayStarted.set(false);
             }
         } catch (Throwable t) {
             log("启动网关异常: " + t.getMessage());
             gatewayStarted.set(false);
         }
+    }
+
+    /** 读取当前进程名 (兼容 API 24) */
+    private String readProcessName() {
+        try {
+            // 方法1: ApplicationInfo
+            if (appContext != null) {
+                return appContext.getApplicationInfo().processName;
+            }
+        } catch (Throwable ignored) {}
+        try {
+            // 方法2: /proc/self/cmdline
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                new java.io.InputStreamReader(new java.io.FileInputStream("/proc/self/cmdline")));
+            String line = br.readLine();
+            br.close();
+            if (line != null) return line.trim();
+        } catch (Throwable ignored) {}
+        return "unknown";
     }
 
     // ════════════════════════════════════════════════════════════
