@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.glmkit.proxy"
-    android:versionCode="68"
-    android:versionName="1.0.68">
+    android:versionCode="69"
+    android:versionName="1.0.69">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
 

@@ -572,15 +572,15 @@ public class LocalApiGateway {
     private static final String PREF_MODELS_KEY = "custom_models";
     private static final String PREF_AUTO_DELETE_CONV = "auto_delete_conversation";
 
-    /** v1.0.68: 读取自动删除会话设置 */
+    /** v1.0.68: 读取自动删除会话设置（默认开启） */
     static boolean isAutoDeleteConversation() {
-        if (context == null) return false;
+        if (context == null) return true;
         try {
             SharedPreferences prefs = context.getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE);
-            return prefs.getBoolean(PREF_AUTO_DELETE_CONV, false);
+            return prefs.getBoolean(PREF_AUTO_DELETE_CONV, true);
         } catch (Throwable t) {
             log("读取 auto_delete_conversation 失败: " + t.getMessage());
-            return false;
+            return true;
         }
     }
 
