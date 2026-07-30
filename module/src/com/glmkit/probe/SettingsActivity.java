@@ -1064,7 +1064,13 @@ public final class SettingsActivity extends Activity {
     }
 
     private int getSavedPort() {
-        return getPrefs().getInt(KEY_PORT, DEFAULT_PORT);
+        int saved = getPrefs().getInt(KEY_PORT, DEFAULT_PORT);
+        // 迁移旧默认端口到新默认端口
+        if (saved == 8765 || saved == 8766) {
+            getPrefs().edit().putInt(KEY_PORT, DEFAULT_PORT).apply();
+            return DEFAULT_PORT;
+        }
+        return saved;
     }
 
     private boolean getSavedKeepAlive() {
