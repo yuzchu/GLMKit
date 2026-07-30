@@ -367,7 +367,9 @@ public class GlmBackend implements LocalApiGateway.Backend {
     private String resolveGlmApiUrl() {
         String base = capture.getBestBaseUrl();
         if (base == null) {
-            throw new IllegalStateException("API base URL 未捕获");
+            // v1.0.50: 兜底 — 使用已知 GLM API URL
+            base = "https://open.bigmodel.cn/api/paas/v4";
+            log("URL 未捕获，使用默认 GLM API URL: " + base);
         }
         // 去除尾部斜杠
         if (base.endsWith("/")) {
