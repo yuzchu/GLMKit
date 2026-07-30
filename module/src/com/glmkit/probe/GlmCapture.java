@@ -25,6 +25,7 @@ public class GlmCapture {
     private volatile String apiKey;        // API Key
     private volatile String cookie;        // Cookie 头
     private volatile String deviceId;      // 设备 ID
+    private volatile String capturedModel; // v1.0.53: 从 APP 请求体拦截的真实模型 ID
     private volatile long captureTimestamp; // 捕获时间戳
 
     // ── OkHttp 客户端 ─────────────────────────────────────────
@@ -82,6 +83,14 @@ public class GlmCapture {
     public void setDeviceId(String id) {
         if (id != null && !id.isEmpty()) {
             this.deviceId = id;
+        }
+    }
+
+    // ── 捕获的模型 ID (v1.0.53) ───────────────────────────────
+    public String getCapturedModel() { return capturedModel; }
+    public void setCapturedModel(String model) {
+        if (model != null && !model.isEmpty()) {
+            this.capturedModel = model;
         }
     }
 

@@ -80,6 +80,8 @@ public class LocalApiGateway {
 
         /** 返回详细诊断信息（用于诊断端点） */
         default String diagnosticInfo() { return readinessDetail(); }
+        /** v1.0.53: 返回从 APP 拦截到的真实模型 ID */
+        default String getCapturedModel() { return null; }
     }
 
     public interface DeltaSink {
@@ -542,6 +544,20 @@ public class LocalApiGateway {
             resp.put("object", "list");
             JSONArray data = new JSONArray();
 
+            // v1.0.53: 拦截到的真实模型放最前面
+            String capturedModel = null;
+            if (backend != null) {
+                capturedModel = backend.getCapturedModel();
+            }
+            if (capturedModel != null && !capturedModel.isEmpty()) {
+                JSONObject model = new JSONObject();
+                model.put("id", capturedModel);
+                model.put("object", "model");
+                model.put("created", System.currentTimeMillis() / 1000);
+                model.put("owned_by", "zhipu");
+                data.put(model);
+            }
+
             String[] models = {
                 "glm-4-plus", "glm-4", "glm-4-flash", "glm-4-flashx", "glm-4-long",
                 "glm-4-air", "glm-4-airx", "glm-4-0520",
@@ -551,6 +567,8 @@ public class LocalApiGateway {
             };
 
             for (String m : models) {
+                // 跳过已添加的拦截模型
+                if (m.equals(capturedModel)) continue;
                 JSONObject model = new JSONObject();
                 model.put("id", m);
                 model.put("object", "model");
@@ -580,6 +598,8 @@ public class LocalApiGateway {
             if (backend != null) {
                 resp.put("backend_ready", backend.isReady());
                 resp.put("backend_detail", backend.readinessDetail());
+                String cm = backend.getCapturedModel();
+                if (cm != null) resp.put("captured_model", cm);
                 String err = backend.lastError();
                 if (err != null) resp.put("last_error", err);
                 resp.put("diagnostic_info", backend.diagnosticInfo());

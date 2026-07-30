@@ -79,10 +79,16 @@ public class GlmBackend implements LocalApiGateway.Backend {
         sb.append("apiKey: ").append(capture.getApiKey() != null ? "captured" : "not captured").append("\n");
         sb.append("cookie: ").append(capture.getCookie() != null ? "captured" : "not captured").append("\n");
         sb.append("deviceId: ").append(capture.getDeviceId() != null ? "captured" : "not captured").append("\n");
+        sb.append("capturedModel: ").append(capture.getCapturedModel() != null ? capture.getCapturedModel() : "not captured").append("\n");
         if (lastError != null) {
             sb.append("lastError: ").append(lastError).append("\n");
         }
         return sb.toString();
+    }
+
+    @Override
+    public String getCapturedModel() {
+        return capture.getCapturedModel();
     }
 
     @Override
@@ -258,7 +264,15 @@ public class GlmBackend implements LocalApiGateway.Backend {
     }
 
     private String mapModel(String openaiModel) {
+        // v1.0.53: 优先使用从 APP 拦截的真实模型 ID
+        String capturedModel = capture.getCapturedModel();
+
         if (openaiModel == null || openaiModel.isEmpty()) {
+            // 客户端未指定模型 → 用拦截到的真实模型，否则默认
+            if (capturedModel != null) {
+                log("  模型选择: 使用拦截到的真实模型 → " + capturedModel);
+                return capturedModel;
+            }
             return DEFAULT_GLM_MODEL;
         }
         // 大小写不敏感匹配
@@ -267,6 +281,12 @@ public class GlmBackend implements LocalApiGateway.Backend {
         if (model.startsWith("glm-") || model.startsWith("codegeex-")) {
             return model;
         }
+        // v1.0.53: 客户端发的是 OpenAI/其他模型名，但我们有真实拦截的模型 → 直接用
+        if (capturedModel != null) {
+            log("  模型映射: " + openaiModel + " → " + capturedModel + " (拦截到的真实模型)");
+            return capturedModel;
+        }
+        // 没有拦截到模型，回退到猜测映射
         // OpenAI 模型名 → GLM 模型名映射
         switch (model) {
             // OpenAI o1 系列 (推理模型 → GLM + thinking)

@@ -18,6 +18,7 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
+import org.json.JSONObject;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -117,6 +118,9 @@ public class Main implements IXposedHookLoadPackage {
 
         // 6. SSL Socket 层捕获（最可靠，不依赖任何类名/方法名）
         hookSslSocket(lpparam.classLoader);
+
+        // 7. v1.0.53: Hook RequestBody.create 拦截请求体，提取真实 model ID
+        hookRequestBodyCreate(lpparam.classLoader);
 
         log("所有 hook 安装完成");
     }
@@ -1103,6 +1107,50 @@ public class Main implements IXposedHookLoadPackage {
         if (authChanged) {
             saveAuthAndNotify();
             broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  v1.0.53: Hook RequestBody.create — 拦截请求体，提取真实 model ID
+    // ════════════════════════════════════════════════════════════
+    private void hookRequestBodyCreate(ClassLoader cl) {
+        try {
+            Class<?> requestBodyClass = cl.loadClass("nu.z");
+            Class<?> mediaTypeClass = cl.loadClass("nu.w");
+
+            XposedHelpers.findAndHookMethod(requestBodyClass, "create",
+                mediaTypeClass, String.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            String body = (String) param.args[1];
+                            if (body == null || body.length() < 10) return;
+
+                            // 快速检查: 是否是 chat completion 请求体
+                            if (!body.contains("\"model\"")) return;
+
+                            JSONObject json = new JSONObject(body);
+                            String model = json.optString("model", null);
+                            if (model != null && !model.isEmpty()) {
+                                String old = getCapture().getCapturedModel();
+                                getCapture().setCapturedModel(model);
+                                if (old == null || !old.equals(model)) {
+                                    log("★★★ 捕获模型 ID: " + model);
+                                    // 记录请求体摘要
+                                    boolean hasMessages = json.has("messages");
+                                    boolean stream = json.optBoolean("stream", false);
+                                    log("  请求体: model=" + model + ", stream=" + stream
+                                        + ", messages=" + hasMessages
+                                        + ", len=" + body.length());
+                                }
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                });
+            log("Hook RequestBody.create() 成功 (v1.0.53)");
+        } catch (Throwable t) {
+            log("Hook RequestBody.create() 失败: " + t.getMessage());
         }
     }
 
