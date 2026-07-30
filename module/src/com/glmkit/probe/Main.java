@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -77,6 +78,8 @@ public class Main implements IXposedHookLoadPackage {
     private static final Set<Class<?>> hookedSocketGetOS = Collections.newSetFromMap(new ConcurrentHashMap<>());
     private static final Set<Class<?>> hookedStreamWrite = Collections.newSetFromMap(new ConcurrentHashMap<>());
     private static final Map<Object, ByteArrayOutputStream> streamBuffers = new ConcurrentHashMap<>();
+    // v1.0.59: 诊断日志计数器 — 限制 URL 诊断日志数量
+    private static final AtomicInteger diagUrlLogCount = new AtomicInteger(0);
 
     // ════════════════════════════════════════════════════════════
     //  日志缓冲区 + 文件写入
@@ -326,17 +329,13 @@ public class Main implements IXposedHookLoadPackage {
             String urlStr = httpUrl.toString();
 
             if (isGlmApiUrl(urlStr)) {
-                // v1.0.52: 只接受 bigmodel 域名作为 API URL
-                if (urlStr.toLowerCase().contains("bigmodel")) {
-                    getCapture().setApiUrl(urlStr);
-                    if (getCapture().getBaseUrl() == null) {
-                        log("捕获 GLM API URL (混淆): " + urlStr);
-                    }
+                // v1.0.59: 接受所有 GLM 相关域名作为 API URL (bigmodel, chatglm, zhipuai, qingyan)
+                getCapture().setApiUrl(urlStr);
+                if (getCapture().getBaseUrl() == null) {
+                    log("捕获 GLM API URL (混淆): " + urlStr);
                 }
-                // v1.0.54: 只从 bigmodel API 请求提取 auth (不从 chatglm.cn 等网页请求提取)
-                if (urlStr.toLowerCase().contains("bigmodel")) {
-                    extractAuthFromObfuscatedRequest(request);
-                }
+                // v1.0.59: 从所有 GLM API 请求提取 auth (不再限制 bigmodel)
+                extractAuthFromObfuscatedRequest(request);
             }
         } catch (Throwable ignored) {}
     }
@@ -1170,11 +1169,15 @@ public class Main implements IXposedHookLoadPackage {
         }
     }
 
-    /** 检查主机名是否是 GLM API (v1.0.54: 只接受 bigmodel，避免从 chatglm.cn 等网页捕获错误 auth) */
+    /** 检查主机名是否是 GLM API (v1.0.59: 接受所有 GLM 相关域名，不仅 bigmodel) */
     private boolean isGlmHost(String host) {
         if (host == null) return false;
         String lower = host.toLowerCase();
-        return lower.contains("bigmodel");
+        return lower.contains("bigmodel") ||
+               lower.contains("chatglm") ||
+               lower.contains("zhipuai") ||
+               lower.contains("qingyan") ||
+               lower.contains("glm");
     }
 
     // ════════════════════════════════════════════════════════════
@@ -1254,12 +1257,10 @@ public class Main implements IXposedHookLoadPackage {
      */
     private void captureAuthFromResponse(Object response) {
         if (response == null) return;
-        // v1.0.57: 跳过网关自身请求的响应，防止 auth 捕获反馈循环
-        // ThreadLocal 标志已足以阻断反馈循环，不需要 response code 检查
-        if (GlmCapture.isGatewayRequest()) return;
+        // v1.0.59: 移除 ThreadLocal 检查 — 网关响应中的 auth 是 APP 拦截器注入的，是真实 auth
+        // ThreadLocal 仅保留在 hookRequestBodyCreate 中防止 model 反馈循环
         try {
-            // v1.0.58: 记录 response code 用于诊断，但从所有响应捕获 auth
-            // （APP 的 401 响应可能携带最新 auth 头，跳过会导致 auth 完全无法捕获）
+            // v1.0.58: 记录 response code 用于诊断
             int responseCode = -1;
             try {
                 Method codeMethod = response.getClass().getMethod("code");
@@ -1277,8 +1278,13 @@ public class Main implements IXposedHookLoadPackage {
             if (httpUrl == null) return;
             String urlStr = httpUrl.toString();
 
-            // 只从 bigmodel API 请求捕获 auth
-            if (!urlStr.toLowerCase().contains("bigmodel")) return;
+            // v1.0.59: 诊断日志 — 记录所有响应 URL（前 20 条），帮助确认 APP 使用哪个域名
+            if (diagUrlLogCount.getAndIncrement() < 20) {
+                log("[DIAG] Response URL (code=" + responseCode + "): " + urlStr);
+            }
+
+            // v1.0.59: 放宽 URL 过滤 — 接受所有 GLM 相关域名 (不再只限 bigmodel)
+            if (!isGlmApiUrl(urlStr)) return;
 
             // nu.Request.d(String) → String (读取头)
             Method headerMethod = finalRequest.getClass().getMethod("d", String.class);
@@ -1288,7 +1294,7 @@ public class Main implements IXposedHookLoadPackage {
                 String old = getCapture().getAuthToken();
                 getCapture().setAuthToken(auth);
                 if (old == null || !old.equals(auth)) {
-                    log("✓✓ 捕获 Authorization (Response.request, code=" + responseCode + "): " + auth.substring(0, Math.min(30, auth.length())) + "...");
+                    log("✓✓ 捕获 Authorization (Response.request, code=" + responseCode + ", url=" + urlStr + "): " + auth.substring(0, Math.min(30, auth.length())) + "...");
                 }
             }
 
@@ -1340,17 +1346,13 @@ public class Main implements IXposedHookLoadPackage {
             String urlStr = httpUrl.toString();
 
             if (isGlmApiUrl(urlStr)) {
-                // v1.0.52: 只接受 bigmodel 域名作为 API URL
-                if (urlStr.toLowerCase().contains("bigmodel")) {
-                    getCapture().setApiUrl(urlStr);
-                    log("捕获 GLM API 请求 URL: " + urlStr);
-                }
-                // v1.0.54: 只从 bigmodel API 请求提取 auth
-                if (urlStr.toLowerCase().contains("bigmodel")) {
-                    Method headersMethod = request.getClass().getMethod("headers");
-                    Object headers = headersMethod.invoke(request);
-                    extractAuthFromHeaders(headers, cl);
-                }
+                // v1.0.59: 接受所有 GLM 相关域名
+                getCapture().setApiUrl(urlStr);
+                log("捕获 GLM API 请求 URL: " + urlStr);
+                // v1.0.59: 从所有 GLM API 请求提取 auth
+                Method headersMethod = request.getClass().getMethod("headers");
+                Object headers = headersMethod.invoke(request);
+                extractAuthFromHeaders(headers, cl);
             }
         } catch (Throwable ignored) {}
     }
@@ -1379,10 +1381,7 @@ public class Main implements IXposedHookLoadPackage {
 
             if (!isGlmApiUrl(urlStr)) return;
 
-            // v1.0.52: 只接受 bigmodel 域名作为 API URL
-            // v1.0.54: 只从 bigmodel API 请求提取 auth
-            if (!urlStr.toLowerCase().contains("bigmodel")) return;
-
+            // v1.0.59: 接受所有 GLM 相关域名 (不再只限 bigmodel)
             getCapture().setApiUrl(urlStr);
             log("捕获 GLM API 请求 URL (混淆): " + urlStr);
 
