@@ -212,7 +212,7 @@ public class LocalApiGateway {
                     }
                 } catch (java.net.BindException be) {
                     log("✗ 端口 " + listenPort + " 已被占用");
-                    // v1.0.74: 顺序递增尝试，不用随机（方便用户找到端口）
+                    // v1.0.75: 顺序递增尝试，不用随机（方便用户找到端口）
                     for (int altPort = listenPort + 1; altPort <= listenPort + 100; altPort++) {
                         try {
                             serverSocket = new ServerSocket();
@@ -817,6 +817,17 @@ public class LocalApiGateway {
             resp.put("endpoint", endpoint());
             resp.put("api_key_required", gatewayApiKey != null);
 
+            // v1.0.75: hook 诊断
+            resp.put("hook_status", com.glmkit.probe.Main.hookStatus);
+            resp.put("capture_request_count", com.glmkit.probe.Main.captureRequestCount);
+            com.glmkit.probe.GlmCapture cap = com.glmkit.probe.Main.getCaptureStatic();
+            if (cap != null) {
+                resp.put("has_okhttp_client", cap.getOkHttpClient() != null);
+                resp.put("has_auth_token", cap.getBestAuth() != null);
+                resp.put("has_base_url", cap.getBestBaseUrl() != null);
+                resp.put("base_url", cap.getBestBaseUrl());
+            }
+
             if (backend != null) {
                 resp.put("backend_ready", backend.isReady());
                 resp.put("backend_detail", backend.readinessDetail());
@@ -860,6 +871,9 @@ public class LocalApiGateway {
         sendResponse(os, 200, "OK", "application/json", resp.toString());
     }
 
+    // ════════════════════════════════════════════════════════════
+    //  /v1/diag — 诊断端点
+    // ════════════════════════════════════════════════════════════
     // ════════════════════════════════════════════════════════════
     //  /v1/chat/completions
     // ════════════════════════════════════════════════════════════
@@ -1227,12 +1241,13 @@ public class LocalApiGateway {
             + ".ok{color:#0f0}.err{color:#e94560}.warn{color:#fa0}"
             + "</style></head><body>"
             + "<h1>GLMKit 控制面板</h1>"
-            + "<div class=\"status\" style=\"text-align:center;color:#666;font-size:12px\">v1.0.74</div>"
+            + "<div class=\"status\" style=\"text-align:center;color:#666;font-size:12px\">v1.0.75</div>"
 
             // 状态区
             + "<div class=\"card\"><h2>状态</h2>"
             + "<div class=\"status\" id=\"status\">加载中...</div>"
             + "<div class=\"status\" id=\"capturedModel\">当前捕获模型: 加载中...</div>"
+            + "<div class=\"status\" id=\"diagInfo\" style=\"font-size:12px;opacity:0.8\"></div>"
             + "<div class=\"row\"><button class=\"success\" onclick=\"captureModel()\">📥 捕获当前模型</button></div>"
             + "</div>"
 
@@ -1264,6 +1279,12 @@ public class LocalApiGateway {
             + "<div id=\"chatLog\" style=\"margin-top:8px\"></div>"
             + "</div>"
 
+            // v1.0.75: 诊断日志区
+            + "<div class=\"card\"><h2>诊断日志</h2>"
+            + "<button onclick=\"loadLogs()\">📋 加载日志</button>"
+            + "<pre id=\"logView\" style=\"margin-top:8px;max-height:400px;overflow:auto;font-size:11px;background:#0a0f1e;padding:8px;border-radius:4px;display:none\"></pre>"
+            + "</div>"
+
             + "<script>"
             + "const B=document.baseURI.replace(/\\/$/, '');"
             + "const AK='" + apiKey + "';"
@@ -1283,6 +1304,13 @@ public class LocalApiGateway {
             + "let cm=d.captured_model||'';"
             + "document.getElementById('capturedModel').innerHTML="
             + "'当前捕获模型: '+(cm?'<span class=ok>'+cm+'</span>':'<span class=warn>未捕获</span>');"
+            + "let diag='';"
+            + "if(d.hook_status) diag+='Hook: <span class=ok>'+d.hook_status+'</span> | ';"
+            + "diag+='拦截请求数: '+(d.capture_request_count||0);"
+            + "if(d.has_okhttp_client!==undefined) diag+=' | OkHttpClient: '+(d.has_okhttp_client?'<span class=ok>已捕获</span>':'<span class=err>未捕获</span>');"
+            + "if(d.has_auth_token!==undefined) diag+=' | Auth: '+(d.has_auth_token?'<span class=ok>已捕获</span>':'<span class=err>未捕获</span>');"
+            + "if(d.has_base_url!==undefined) diag+=' | BaseUrl: '+(d.has_base_url?'<span class=ok>'+d.base_url+'</span>':'<span class=err>未捕获</span>');"
+            + "document.getElementById('diagInfo').innerHTML=diag;"
             + "}).catch(e=>{});"
 
             + "loadModels();"
@@ -1297,6 +1325,16 @@ public class LocalApiGateway {
             + "let st=document.getElementById('autoDeleteStatus');"
             + "st.innerHTML=cb.checked?'<span class=warn>⚠️ 已开启：每次对话后自动删除会话</span>':'<span class=status>已关闭：对话后保留会话</span>';"
             + "}).catch(e=>{});"
+            + "}"
+
+            // v1.0.75: 加载日志
+            + "function loadLogs(){"
+            + "let v=document.getElementById('logView');"
+            + "v.style.display='block';"
+            + "v.textContent='加载中...';"
+            + "fetch(B+'/v1/logs').then(r=>r.json()).then(d=>{"
+            + "v.textContent=d.logs||'(空)';"
+            + "}).catch(e=>{v.textContent='加载失败: '+e;});"
             + "}"
 
             // v1.0.68: 切换自动删除

@@ -61,6 +61,11 @@ public class Main implements IXposedHookLoadPackage {
     private static volatile Main INSTANCE;
     private static volatile ClassLoader hostClassLoader;
 
+    // v1.0.75: hook 诊断状态
+    public static volatile String hookStatus = "未启动";
+    public static volatile String okHttpHookDetail = "";
+    public static volatile int captureRequestCount = 0;
+
     // 捕获的 GLM 网络信息
     private volatile GlmCapture capture;
     private static volatile Context appContext;
@@ -342,15 +347,17 @@ public class Main implements IXposedHookLoadPackage {
     //  OkHttp Hook — 多策略递进
     // ════════════════════════════════════════════════════════════
     private void hookOkHttp(ClassLoader cl) {
+        log("hookOkHttp 开始, classLoader=" + cl.getClass().getName());
         // v1.0.49 策略0: 直接 hook 已知混淆类名 (智谱清言 v3.7.0 OkHttp 映射)
         // 最快最可靠 — 不需要 dex 扫描
-        if (hookObfuscatedOkHttpDirect(cl)) return;
+        if (hookObfuscatedOkHttpDirect(cl)) { hookStatus = "策略0:混淆直hook"; return; }
         // 策略1: okhttp3.OkHttpClient$Builder (标准 OkHttp 3.x/4.x)
-        if (tryHookOkHttp3Builder(cl)) return;
+        if (tryHookOkHttp3Builder(cl)) { hookStatus = "策略1:Builder.build"; return; }
         // 策略2: okhttp3.OkHttpClient.newCall() 直接 hook
-        if (tryHookOkHttp3NewCall(cl)) return;
+        if (tryHookOkHttp3NewCall(cl)) { hookStatus = "策略2:newCall"; return; }
         // 策略3: com.squareup.okhttp (OkHttp 2.x)
-        if (tryHookOkHttp2(cl)) return;
+        if (tryHookOkHttp2(cl)) { hookStatus = "策略3:okhttp2"; return; }
+        hookStatus = "策略5:URLConn(降级)";
         // 策略5: HttpURLConnection 兜底（立即安装，非阻塞）
         hookUrlConnection(cl);
         // 策略4: dex 结构扫描（异步执行，避免 ANR）
@@ -371,8 +378,10 @@ public class Main implements IXposedHookLoadPackage {
 
     private boolean hookObfuscatedOkHttpDirect(ClassLoader cl) {
         try {
+            log("策略0: 尝试加载 nu.OkHttpClient / nu.Request...");
             Class<?> clientClass = cl.loadClass("nu.OkHttpClient");
             Class<?> requestClass = cl.loadClass("nu.Request");
+            log("策略0: 类加载成功, client=" + clientClass.getName() + " request=" + requestClass.getName());
 
             XposedHelpers.findAndHookMethod(
                 clientClass, "b", requestClass,
@@ -411,7 +420,13 @@ public class Main implements IXposedHookLoadPackage {
             if (httpUrl == null) return;
             String urlStr = httpUrl.toString();
 
+            // v1.0.75: 记录所有请求 URL（前20条，帮助诊断）
+            if (captureRequestCount < 20) {
+                log("请求 URL: " + urlStr);
+            }
+
             if (isGlmApiUrl(urlStr)) {
+                captureRequestCount++;
                 // v1.0.59: 接受所有 GLM 相关域名作为 API URL (bigmodel, chatglm, zhipuai, qingyan)
                 getCapture().setApiUrl(urlStr);
                 if (getCapture().getBaseUrl() == null) {
@@ -2140,6 +2155,12 @@ public class Main implements IXposedHookLoadPackage {
             }
         }
         return capture;
+    }
+
+    /** v1.0.75: 静态方法供 LocalApiGateway 诊断端点使用 */
+    public static GlmCapture getCaptureStatic() {
+        if (INSTANCE != null) return INSTANCE.capture;
+        return null;
     }
 
     static Main getInstance() { return INSTANCE; }
