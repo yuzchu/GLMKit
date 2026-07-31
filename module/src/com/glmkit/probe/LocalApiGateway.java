@@ -3742,7 +3742,9 @@ final class LocalApiGateway {
         }
         boolean search = body.optBoolean("search", false);
         String nativeModel;
-        if (lower.equals("glm-chat") || lower.equals("glm-aux")
+        if (lower.equals("glm-4-flash") || lower.equals("glm-4")
+                || lower.equals("glm-4-plus") || lower.equals("glm-4-long")
+                || lower.equals("glm-chat") || lower.equals("glm-aux")
                 || lower.startsWith("glm-aux-") || lower.equals("glm-reasoner")
                 || lower.equals("glm-v3") || lower.equals("default")
                 || lower.equals("glm") || lower.startsWith("glm-r1")
@@ -3751,10 +3753,11 @@ final class LocalApiGateway {
                 || lower.startsWith("sonnet") || lower.startsWith("opus")
                 || lower.startsWith("haiku")) {
             nativeModel = "default";
+        } else if (lower.equals("glm-4v") || lower.equals("glm-vision")
+                || lower.equals("vision")) {
+            nativeModel = "vision";
         } else if (lower.equals("glm-expert") || lower.equals("expert")) {
             nativeModel = "expert";
-        } else if (lower.equals("glm-vision") || lower.equals("vision")) {
-            nativeModel = "vision";
         } else {
             throw new GatewayException(400, "model_not_found", "Unknown local model: " + requested);
         }
@@ -3786,15 +3789,16 @@ final class LocalApiGateway {
 
     private static JSONObject modelsResponse() throws JSONException {
         JSONArray data = new JSONArray();
-        data.put(modelObject("glm-chat", "default", false));
-        data.put(modelObject("glm-reasoner", "default", true));
-        data.put(modelObject("glm-expert", "expert", false));
-        data.put(modelObject("glm-vision", "vision", false));
+        data.put(modelObject("glm-4-flash", "default", false));
+        data.put(modelObject("glm-4", "default", false));
+        data.put(modelObject("glm-4-plus", "plus", false));
+        data.put(modelObject("glm-4-long", "long", false));
+        data.put(modelObject("glm-4v", "vision", false));
         // Codex chooses its built-in tool catalogue from the configured model name.
         // Keep the identity explicit: this name enables Codex compatibility metadata,
         // while requests still use GLM Android's native default model.
         data.put(modelObject("gpt-5.4", "default", false)
-                .put("alias_for", "glm-chat")
+                .put("alias_for", "glm-4-flash")
                 .put("compatibility_alias", true));
         return new JSONObject().put("object", "list").put("data", data);
     }
@@ -3802,7 +3806,7 @@ final class LocalApiGateway {
     private static JSONObject modelObject(String id, String nativeModel, boolean reasoning)
             throws JSONException {
         return new JSONObject().put("id", id).put("object", "model")
-                .put("created", 0).put("owned_by", "glm-android")
+                .put("created", 0).put("owned_by", "zhipu")
                 .put("native_model", nativeModel).put("reasoning", reasoning);
     }
 

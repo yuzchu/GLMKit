@@ -1455,7 +1455,7 @@ public final class GLMKitUi {
                 + "• \"thinking\": true 或 {\"type\":\"enabled\"}\n"
                 + "• \"reasoning_effort\": \"medium\"\n"
                 + "Responses 也支持 \"reasoning\": {\"effort\":\"medium\"}。"
-                + "模型使用 glm-reasoner 时会自动开启；不附加且使用 glm-chat 时保持关闭。",
+                + "模型使用 glm-4-plus 时会自动开启；不附加且使用 glm-4-flash 时保持关闭。",
                 textColor, dark);
         card.addView(reasoningHelp, insetParams(act, 0, 14));
 
@@ -1636,7 +1636,7 @@ public final class GLMKitUi {
                     + "• 支持客户端 tools、tool_use、tool_result、并行工具选择与重复副作用抑制\n"
                     + "• thinking={\"type\":\"enabled\"} 或 adaptive 会打开 GLM 深度思考\n"
                     + "• 每 5 秒发送 ping、累计 token，并在正文开始前恢复 thinking 状态\n"
-                    + "模型名可使用 glm-chat；Claude / sonnet / opus / haiku 名称会作为兼容别名映射到 GLM 默认模型。";
+                    + "模型名可使用 glm-4-flash；Claude / sonnet / opus / haiku 名称会作为兼容别名映射到 GLM 默认模型。";
         }
         return "OpenAI Chat Completions 与 Responses API 已启用：\n"
                 + "• Chat：function tools / tool_calls / tool 结果回传\n"
@@ -1644,7 +1644,7 @@ public final class GLMKitUi {
                 + "• 成功工具按名称与规范化参数去重，避免 Agent 重复执行副作用\n"
                 + "• 支持 chunked 请求体、stream_options.include_usage 与 5 秒 SSE 心跳\n"
                 + "Codex 自定义提供商请把 base_url 设为上方地址、wire API 设为 responses。"
-                + "普通对话可用 glm-chat；需要 Codex 完整内建工具目录时可用兼容别名 gpt-5.4。";
+                + "普通对话可用 glm-4-flash；需要 Codex 完整内建工具目录时可用兼容别名 gpt-5.4。";
     }
 
     private static String localApiProtocolDisplayName() {

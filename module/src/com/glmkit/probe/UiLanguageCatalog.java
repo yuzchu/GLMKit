@@ -580,8 +580,8 @@ final class UiLanguageCatalog {
                 "• \"thinking\": true or {\"type\":\"enabled\"}\n");
         add("Responses 也支持 \"reasoning\": {\"effort\":\"medium\"}。",
                 "Responses also supports \"reasoning\": {\"effort\":\"medium\"}. ");
-        add("模型使用 glm-reasoner 时会自动开启；不附加且使用 glm-chat 时保持关闭。",
-                "It is enabled automatically for glm-reasoner and remains off for glm-chat when no parameter is supplied.");
+        add("模型使用 glm-4-plus 时会自动开启；不附加且使用 glm-4-flash 时保持关闭。",
+                "It is enabled automatically for glm-4-plus and remains off for glm-4-flash when no parameter is supplied.");
         add("实时监听与请求统计", "Live listener and request statistics");
         add("高级设置", "Advanced settings");
         add("Cloudflare 自有域名、公网 IP、固定端口与连接诊断",
@@ -621,8 +621,8 @@ final class UiLanguageCatalog {
                 "• thinking={\"type\":\"enabled\"} or adaptive enables GLM deep reasoning\n");
         add("• 每 5 秒发送 ping、累计 token，并在正文开始前恢复 thinking 状态\n",
                 "• Sends a ping every 5 seconds, accumulates tokens, and restores thinking state before answer text starts\n");
-        add("模型名可使用 glm-chat；Claude / sonnet / opus / haiku 名称会作为兼容别名映射到 GLM 默认模型。",
-                "Use glm-chat as the model name; Claude/sonnet/opus/haiku names map to the default GLM model as compatibility aliases.");
+        add("模型名可使用 glm-4-flash；Claude / sonnet / opus / haiku 名称会作为兼容别名映射到 GLM 默认模型。",
+                "Use glm-4-flash as the model name; Claude/sonnet/opus/haiku names map to the default GLM model as compatibility aliases.");
         add("OpenAI Chat Completions 与 Responses API 已启用：\n",
                 "OpenAI Chat Completions and Responses APIs are enabled:\n");
         add("• Chat：function tools / tool_calls / tool 结果回传\n",
@@ -635,8 +635,8 @@ final class UiLanguageCatalog {
                 "• Supports chunked request bodies, stream_options.include_usage, and 5-second SSE heartbeats\n");
         add("Codex 自定义提供商请把 base_url 设为上方地址、wire API 设为 responses。",
                 "For a Codex custom provider, set base_url to the address above and wire API to responses. ");
-        add("普通对话可用 glm-chat；需要 Codex 完整内建工具目录时可用兼容别名 gpt-5.4。",
-                "Use glm-chat for normal conversations or the gpt-5.4 compatibility alias when Codex needs its full built-in tool catalog.");
+        add("普通对话可用 glm-4-flash；需要 Codex 完整内建工具目录时可用兼容别名 gpt-5.4。",
+                "Use glm-4-flash for normal conversations or the gpt-5.4 compatibility alias when Codex needs its full built-in tool catalog.");
         add("选择 API 格式", "Choose API format");
         add("Chat Completions、Responses 与 /v1/models", "Chat Completions, Responses, and /v1/models");
         add("Messages、count_tokens 与 Claude Code", "Messages, count_tokens, and Claude Code");
