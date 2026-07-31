@@ -12534,7 +12534,7 @@ public class Main extends XposedModule {
                             getCapture().setOkHttpClient(param.thisObject);
                             log("✓✓ 捕获混淆 OkHttpClient (nu.OkHttpClient) — Deekseep 方案 ★★");
                             showToast("GLMKit 已捕获网络层");
-                            broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+                            broadcastActivation("com.glmkit.probe.HOOK_SUCCESS");
                             // v1.0.55: 策略0也要安装 RealCall hook（捕获 auth 从 Response.request）
                             installCaptureInterceptor(param.thisObject, cl);
                         }
@@ -12655,7 +12655,7 @@ public class Main extends XposedModule {
                         getCapture().setOkHttpClient(client);
                         log("捕获 OkHttpClient 实例 (Builder.build)");
                         showToast("GLMKit 已捕获网络层");
-                        broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+                        broadcastActivation("com.glmkit.probe.HOOK_SUCCESS");
                         installCaptureInterceptor(client, cl);
                     }
                 });
@@ -12681,7 +12681,7 @@ public class Main extends XposedModule {
                             getCapture().setOkHttpClient(param.thisObject);
                             log("捕获 OkHttpClient 实例 (newCall)");
                             showToast("GLMKit 已捕获网络层");
-                            broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+                            broadcastActivation("com.glmkit.probe.HOOK_SUCCESS");
                         }
                         try {
                             extractRequestDetails(param.args[0], cl);
@@ -12710,7 +12710,7 @@ public class Main extends XposedModule {
                             getCapture().setOkHttpClient(param.thisObject);
                             log("捕获 OkHttp2 客户端 (newCall)");
                             showToast("GLMKit 已捕获网络层");
-                            broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+                            broadcastActivation("com.glmkit.probe.HOOK_SUCCESS");
                         }
                         try {
                             Object request = param.args[0];
@@ -12945,7 +12945,7 @@ public class Main extends XposedModule {
                         getCapture().setOkHttpClient(param.thisObject);
                         log("捕获混淆 OkHttpClient 实例: " + clientClass.getName());
                         showToast("GLMKit 已捕获网络层（结构扫描）");
-                        broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+                        broadcastActivation("com.glmkit.probe.HOOK_SUCCESS");
                     }
                     // 捕获请求详情
                     try {
@@ -13362,7 +13362,7 @@ public class Main extends XposedModule {
 
         if (authChanged) {
             saveAuthAndNotify();
-            broadcastActivation("com.glmkit.proxy.HOOK_SUCCESS");
+            broadcastActivation("com.glmkit.probe.HOOK_SUCCESS");
         }
     }
 
@@ -14294,8 +14294,8 @@ public class Main extends XposedModule {
 
         // 广播通知 GLMKit APP
         try {
-            Intent intent = new Intent("com.glmkit.proxy.AUTH_CAPTURED");
-            intent.setPackage("com.glmkit.proxy");
+            Intent intent = new Intent("com.glmkit.probe.AUTH_CAPTURED");
+            intent.setPackage("com.glmkit.probe");
             if (appContext != null) {
                 appContext.sendBroadcast(intent);
                 log("发送 AUTH_CAPTURED 广播");
@@ -14315,7 +14315,7 @@ public class Main extends XposedModule {
     private void broadcastActivation(String action) {
         try {
             Intent intent = new Intent(action);
-            intent.setPackage("com.glmkit.proxy");
+            intent.setPackage("com.glmkit.probe");
             if (appContext != null) {
                 appContext.sendBroadcast(intent);
                 log("发送激活广播: " + action);
