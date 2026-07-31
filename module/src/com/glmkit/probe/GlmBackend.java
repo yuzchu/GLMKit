@@ -1,6 +1,7 @@
 package com.glmkit.probe;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -532,11 +533,24 @@ public class GlmBackend implements LocalApiGateway.Backend {
         payload.put("project_id", "");
         payload.put("chat_type", "user_chat");
 
-        // 消息转换 — 将 OpenAI messages 转为 GLM 格式
+        // 消息转换 — 将 prompt 转为 GLM 格式
         // GLM 格式: [{"role": "user", "content": [{"type": "text", "text": "..."}]}]
-        // 参考项目将所有消息合并为一个 prompt
-        JSONArray openaiMsgs = new JSONArray(req.prompt);
-        JSONArray glmMessages = convertMessagesToGlm(openaiMsgs);
+        // v2.0.3: Deekseep 网关把 messages 压平为纯文本，需要兼容两种格式
+        JSONArray glmMessages;
+        String promptStr = req.prompt != null ? req.prompt : "";
+        if (promptStr.trim().startsWith("[")) {
+            // 旧格式: prompt 是 JSON 数组字符串
+            try {
+                JSONArray openaiMsgs = new JSONArray(promptStr);
+                glmMessages = convertMessagesToGlm(openaiMsgs);
+            } catch (JSONException e) {
+                // 解析失败，当作纯文本处理
+                glmMessages = promptToGlmMessages(promptStr);
+            }
+        } else {
+            // 新格式: prompt 是纯文本 (Deekseep 网关已压平)
+            glmMessages = promptToGlmMessages(promptStr);
+        }
         payload.put("messages", glmMessages);
 
         // meta_data
@@ -571,6 +585,21 @@ public class GlmBackend implements LocalApiGateway.Backend {
             case "zero":          return "zero"; // 兼容直接用 chat_mode 值
             default:              return suffix; // 未知值原样传
         }
+    }
+
+    /** v2.0.3: 将纯文本 prompt 转为 GLM 消息格式 */
+    private JSONArray promptToGlmMessages(String prompt) throws JSONException {
+        JSONArray glmMessages = new JSONArray();
+        JSONObject userMsg = new JSONObject();
+        userMsg.put("role", "user");
+        JSONArray contentArr = new JSONArray();
+        JSONObject textContent = new JSONObject();
+        textContent.put("type", "text");
+        textContent.put("text", prompt != null ? prompt : "");
+        contentArr.put(textContent);
+        userMsg.put("content", contentArr);
+        glmMessages.put(userMsg);
+        return glmMessages;
     }
 
     /** v1.0.63: 将 OpenAI messages 转为 GLM 格式 */
