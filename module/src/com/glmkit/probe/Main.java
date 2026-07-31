@@ -123,6 +123,10 @@ public class Main implements IXposedHookLoadPackage {
         // 4. 尝试 hook OkHttp（标准名 → 结构扫描 → HttpURLConnection 兜底）
         hookOkHttp(lpparam.classLoader);
 
+        // v1.0.76: 独立安装 RealCall hook，不依赖 OkHttpClient 捕获
+        // 分身可能 nu.OkHttpClient.b 从不被调用，但 RealCall.execute/enqueue 一定会被调用
+        installCaptureInterceptor(null, lpparam.classLoader);
+
         // 5. Hook Retrofit 构建 捕获 base URL
         hookRetrofitBuilder(lpparam.classLoader);
 
@@ -1535,11 +1539,42 @@ public class Main implements IXposedHookLoadPackage {
     private void installCaptureInterceptor(Object client, ClassLoader cl) {
         if (!realCallHooked.compareAndSet(false, true)) return;
         Class<?> realCallClass;
-        try {
-            realCallClass = cl.loadClass("okhttp3.internal.connection.RealCall");
-        } catch (Throwable t) {
+        // v1.0.76: 尝试多个类名（标准 + 混淆）
+        String[] realCallNames = {
+            "okhttp3.internal.connection.RealCall",
+            "okhttp3.RealCall",
+            "nu.x", "nu.y", "nu.w", "nu.v", "nu.a", "nu.b", "nu.c", "nu.d", "nu.f", "nu.g", "nu.h"
+        };
+        realCallClass = null;
+        for (String name : realCallNames) {
+            try {
+                Class<?> c = cl.loadClass(name);
+                // 验证: 必须有 execute() 方法
+                c.getDeclaredMethod("execute");
+                realCallClass = c;
+                log("✓ RealCall 类找到: " + name);
+                break;
+            } catch (Throwable ignored) {}
+        }
+        if (realCallClass == null) {
+            // v1.0.76: 最后手段 — 遍历 nu 包下所有类找有 execute() 的
+            log("⚠ 标准 RealCall 未找到，尝试遍历 nu 包...");
+            try {
+                Class<?> nuClass = cl.loadClass("nu.OkHttpClient");
+                // 通过 OkHttpClient.newCall 的返回类型推断 RealCall
+                for (Method m : nuClass.getDeclaredMethods()) {
+                    if (m.getParameterCount() == 1 && m.getName().equals("b")) {
+                        Class<?> returnType = m.getReturnType();
+                        log("  nu.OkHttpClient.b 返回类型: " + returnType.getName());
+                        realCallClass = returnType;
+                        break;
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+        if (realCallClass == null) {
             realCallHooked.set(false);
-            log("安装 RealCall 拦截器失败 (类未找到): " + t.getMessage());
+            log("安装 RealCall 拦截器失败: 所有类名尝试均未找到");
             return;
         }
 
@@ -1581,22 +1616,27 @@ public class Main implements IXposedHookLoadPackage {
         }
 
         // hook enqueue() — 异步请求，Callback 类被混淆为 nu.e（不是 okhttp3.Callback！）
-        try {
-            Class<?> callbackClass = cl.loadClass("nu.e");
-            XposedHelpers.findAndHookMethod(
-                realCallClass, "enqueue", callbackClass,
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
+        // v1.0.76: 尝试多个 callback 类名
+        String[] callbackNames = {"nu.e", "okhttp3.Callback", "nu.k", "nu.l", "nu.m", "nu.n", "nu.o", "nu.p", "nu.q", "nu.r", "nu.s", "nu.t"};
+        for (String cbName : callbackNames) {
+            try {
+                Class<?> callbackClass = cl.loadClass(cbName);
+                XposedHelpers.findAndHookMethod(
+                    realCallClass, "enqueue", callbackClass,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
                         captureRequest(param.thisObject, cl);
                     }
                 });
-            log("✓ 安装 enqueue() hook (nu.e)");
-        } catch (Throwable t) {
-            log("⚠ enqueue() hook 失败: " + t.getMessage());
+            log("✓ 安装 enqueue() hook (" + cbName + ")");
+            break; // 成功就跳出
+            } catch (Throwable t) {
+                // 继续尝试下一个 callback 类名
+            }
         }
 
-        log("安装请求捕获拦截器完成 (v1.0.55)");
+        log("安装请求捕获拦截器完成 (v1.0.76)");
     }
 
     /**

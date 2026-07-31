@@ -212,7 +212,7 @@ public class LocalApiGateway {
                     }
                 } catch (java.net.BindException be) {
                     log("✗ 端口 " + listenPort + " 已被占用");
-                    // v1.0.76: 顺序递增尝试，不用随机（方便用户找到端口）
+                    // v1.0.77: 顺序递增尝试，不用随机（方便用户找到端口）
                     for (int altPort = listenPort + 1; altPort <= listenPort + 100; altPort++) {
                         try {
                             serverSocket = new ServerSocket();
@@ -817,7 +817,7 @@ public class LocalApiGateway {
             resp.put("endpoint", endpoint());
             resp.put("api_key_required", gatewayApiKey != null);
 
-            // v1.0.76: hook 诊断
+            // v1.0.77: hook 诊断
             resp.put("hook_status", com.glmkit.probe.Main.hookStatus);
             resp.put("capture_request_count", com.glmkit.probe.Main.captureRequestCount);
             com.glmkit.probe.GlmCapture cap = com.glmkit.probe.Main.getCaptureStatic();
@@ -1241,7 +1241,7 @@ public class LocalApiGateway {
             + ".ok{color:#0f0}.err{color:#e94560}.warn{color:#fa0}"
             + "</style></head><body>"
             + "<h1>GLMKit 控制面板</h1>"
-            + "<div class=\"status\" style=\"text-align:center;color:#666;font-size:12px\">v1.0.76</div>"
+            + "<div class=\"status\" style=\"text-align:center;color:#666;font-size:12px\">v1.0.77</div>"
 
             // 状态区
             + "<div class=\"card\"><h2>状态</h2>"
@@ -1279,7 +1279,7 @@ public class LocalApiGateway {
             + "<div id=\"chatLog\" style=\"margin-top:8px\"></div>"
             + "</div>"
 
-            // v1.0.76: 诊断日志区
+            // v1.0.77: 诊断日志区
             + "<div class=\"card\"><h2>诊断日志</h2>"
             + "<div class=\"row\" style=\"margin-bottom:8px\">"
             + "<button onclick=\"loadLogs()\">📋 加载日志</button>"
@@ -1330,7 +1330,7 @@ public class LocalApiGateway {
             + "}).catch(e=>{});"
             + "}"
 
-            // v1.0.76: 加载日志
+            // v1.0.77: 加载日志
             + "function loadLogs(){"
             + "let v=document.getElementById('logView');"
             + "v.style.display='block';"
@@ -1339,7 +1339,7 @@ public class LocalApiGateway {
             + "v.textContent=d.logs||'(空)';"
             + "}).catch(e=>{v.textContent='加载失败: '+e;});"
             + "}"
-            // v1.0.76: 一键复制日志
+            // v1.0.77: 一键复制日志
             + "function copyLogs(){"
             + "fetch(B+'/v1/logs').then(r=>r.json()).then(d=>{"
             + "let text=d.logs||'(空)';"
