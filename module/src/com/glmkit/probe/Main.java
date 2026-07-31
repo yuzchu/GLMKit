@@ -383,11 +383,21 @@ public class Main implements IXposedHookLoadPackage {
             Class<?> requestClass = cl.loadClass("nu.Request");
             log("策略0: 类加载成功, client=" + clientClass.getName() + " request=" + requestClass.getName());
 
+            // v1.0.76: 枚举 nu.OkHttpClient 所有方法，帮助诊断
+            try {
+                StringBuilder methods = new StringBuilder("nu.OkHttpClient 方法列表: ");
+                for (Method m : clientClass.getDeclaredMethods()) {
+                    methods.append(m.getName()).append("(").append(m.getParameterCount()).append("args) ");
+                }
+                log(methods.toString());
+            } catch (Throwable ignored) {}
+
             XposedHelpers.findAndHookMethod(
                 clientClass, "b", requestClass,
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
+                        log(">>> 策略0 callback 被调用! this=" + param.thisObject.getClass().getName());
                         // 捕获 OkHttpClient 实例
                         if (getCapture().getOkHttpClient() == null) {
                             getCapture().setOkHttpClient(param.thisObject);
@@ -404,6 +414,37 @@ public class Main implements IXposedHookLoadPackage {
                     }
                 });
             log("✓ 策略0: Hook nu.OkHttpClient.b(nu.Request) 成功");
+
+            // v1.0.76: 额外 hook 所有接受 Request 参数的方法（b 可能不是 newCall）
+            try {
+                for (Method m : clientClass.getDeclaredMethods()) {
+                    if (m.getName().equals("b")) continue; // 已 hook
+                    Class<?>[] params = m.getParameterTypes();
+                    if (params.length == 1 && params[0] == requestClass) {
+                        final String mName = m.getName();
+                        try {
+                            XposedHelpers.findAndHookMethod(clientClass, mName, requestClass,
+                                new XC_MethodHook() {
+                                    @Override
+                                    protected void afterHookedMethod(MethodHookParam param) {
+                                        log(">>> 额外 hook 命中: " + mName + "(Request)");
+                                        if (getCapture().getOkHttpClient() == null) {
+                                            getCapture().setOkHttpClient(param.thisObject);
+                                            log("✓✓ 通过 " + mName + " 捕获 OkHttpClient");
+                                        }
+                                        try { extractObfuscatedRequestUrl(param.args[0]); } catch (Throwable ignored) {}
+                                    }
+                                });
+                            log("  额外 hook: " + mName + "(Request) 成功");
+                        } catch (Throwable t) {
+                            log("  额外 hook: " + mName + " 失败: " + t.getMessage());
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                log("额外方法枚举失败: " + t.getMessage());
+            }
+
             return true;
         } catch (Throwable t) {
             log("策略0: Hook nu.OkHttpClient.b 失败: " + t.getMessage());
