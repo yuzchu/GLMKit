@@ -1,16 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.glmkit.proxy"
-    android:versionCode="77"
-    android:versionName="1.0.70">
+    package="com.glmkit.probe"
+    android:versionCode="200"
+    android:versionName="2.0.0">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
-
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <queries>
         <package android:name="com.zhipuai.qingyan" />
@@ -20,18 +28,14 @@
         android:label="GLMKit"
         android:description="@string/moddesc"
         android:forceQueryable="true"
-        android:allowBackup="false"
-        android:usesCleartextTraffic="true">
-
-        <meta-data android:name="xposedmodule" android:value="true" />
-        <meta-data android:name="xposedminversion" android:value="93" />
-        <meta-data android:name="xposeddescription" android:value="GLM (智谱清言) 本地 API 反代增强模块" />
+        android:extractNativeLibs="true"
+        android:allowBackup="false">
 
         <activity
             android:name="com.glmkit.probe.SettingsActivity"
             android:exported="true"
             android:label="GLMKit"
-            android:theme="@android:style/Theme.Material.Light.NoActionBar">
+            android:theme="@android:style/Theme.Material.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -39,12 +43,18 @@
         </activity>
 
         <activity
+            android:name="com.glmkit.probe.PromptPickerActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+
+        <activity
             android:name="com.glmkit.probe.LocalApiKeepAliveActivity"
             android:exported="true"
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:taskAffinity=""
-            android:theme="@android:style/Theme.Material.Light.NoActionBar">
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -62,24 +72,27 @@
             android:stopWithTask="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Keeps the user-enabled GLM localhost API and SSE stream responsive in the background." />
+                android:value="Keeps the user-enabled GLMKit localhost API and SSE stream responsive in the background." />
         </service>
 
         <provider
             android:name="com.glmkit.probe.XposedActivationProvider"
-            android:authorities="com.glmkit.proxy.XposedService"
+            android:authorities="com.glmkit.probe.XposedService"
             android:exported="true"
             android:grantUriPermissions="false" />
 
         <receiver
             android:name="com.glmkit.probe.XposedActivationReceiver"
             android:enabled="true"
+            android:exported="true" />
+
+        <receiver
+            android:name="com.glmkit.probe.ProactiveHeartbeatReceiver"
+            android:enabled="true"
             android:exported="true">
             <intent-filter>
-                <action android:name="com.glmkit.proxy.HOOK_STARTED" />
-                <action android:name="com.glmkit.proxy.HOOK_SUCCESS" />
-                <action android:name="com.glmkit.proxy.AUTH_CAPTURED" />
-                <action android:name="com.glmkit.proxy.GATEWAY_STARTED" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
     </application>

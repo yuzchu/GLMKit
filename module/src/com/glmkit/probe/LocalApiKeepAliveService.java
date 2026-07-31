@@ -5,6 +5,9 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -17,43 +20,41 @@ import android.os.SystemClock;
 import android.util.Log;
 
 /**
- * v1.0.41: 前台保活服务 — 在 GLMKit APP 自身进程中启动并运行本地 API 网关。
+ * Foreground companion for the localhost API.
  *
- * <p>架构变更：
- * <ul>
- *   <li>旧架构：网关运行在智谱清言进程 → 切回 APP 时进程被杀 → 网关死</li>
- *   <li>新架构：网关运行在 GLMKit APP 的本 Service 中 → 前台 Service 保活 → 不被杀</li>
- * </ul>
- *
- * <p>模块（运行在智谱清言进程）只负责捕获 auth → 写 /sdcard/glmkit_auth.json → 广播通知。
- * 本 Service 读取该文件获取 auth，通过 GlmBackend 发起请求。</p>
+ * <p>The actual gateway must stay inside GLM because it calls obfuscated native transport
+ * objects captured by the Xposed hooks. A cached activity process, however, can be frozen even
+ * after the OEM battery screen reports "unrestricted". This small companion periodically sends
+ * an explicit no-op broadcast. ActivityManager unfreezes the target before delivering it, and the
+ * injected receiver hook consumes it before GLM's share-result implementation can see it.</p>
  */
 public final class LocalApiKeepAliveService extends Service {
-
     static final String TARGET_PACKAGE = "com.zhipuai.qingyan";
+    static final String TARGET_RECEIVER = "com.zhipuai.qingyan.system.ShareResultReceiver";
+    static final String ACTION_HEARTBEAT = "com.glmkit.probe.action.LOCAL_API_KEEPALIVE";
+    static final String ACTION_CONTROL = "com.glmkit.probe.action.LOCAL_API_CONTROL";
+
     static final String ACTION_START = "com.glmkit.probe.action.START_LOCAL_API_KEEPALIVE";
     static final String EXTRA_CONTROL_TOKEN = "glmkit_control_token";
+    static final String EXTRA_PROTOCOL = "protocol";
     static final String CONTROL_TOKEN = "glmkit-local-api-keepalive-v1";
-
     private static final String PREFS = "glmkit_local_api_keepalive";
     private static final String KEY_REQUESTED = "requested";
     private static final String CHANNEL_ID = "glmkit_local_api";
-    private static final int NOTIFICATION_ID = 0x614D;
-    private static final long HEARTBEAT_MS = 10_000L;
-    private static final String TAG = "GLMKit-KeepAlive";
+    private static final int NOTIFICATION_ID = 0xD5A1;
+    private static final long HEARTBEAT_MS = 5_000L;
+    private static final long ACK_TIMEOUT_MS = 90_000L;
+    private static final String TAG = "GLMKitKeepAlive";
 
     private static volatile boolean running;
-    private static volatile int gatewayPort;
+    private static volatile long startedElapsed;
+    private static volatile long lastBroadcastElapsed;
+    private static volatile long lastAckElapsed;
+    private static volatile boolean lastGatewayRunning;
     private static volatile String lastError = "";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private PowerManager.WakeLock wakeLock;
-    private GlmCapture capture;
-    private GlmBackend backend;
-
-    // ════════════════════════════════════════════════════════════
-    //  心跳 Runnable — 定期检查网关状态并更新通知
-    // ════════════════════════════════════════════════════════════
 
     private final Runnable heartbeat = new Runnable() {
         @Override public void run() {
@@ -61,29 +62,52 @@ public final class LocalApiKeepAliveService extends Service {
                 stopSelf();
                 return;
             }
-
-            // 检查网关状态
-            if (!LocalApiGateway.isRunning()) {
-                Log.w(TAG, "网关未运行，尝试重启...");
-                startGateway();
+            long now = SystemClock.elapsedRealtime();
+            if (startedElapsed > 0L && now - startedElapsed >= ACK_TIMEOUT_MS
+                    && (lastAckElapsed <= 0L || now - lastAckElapsed >= ACK_TIMEOUT_MS)) {
+                lastError = "GLM 长时间未确认保活，服务已自动停止";
+                Log.w(TAG, lastError);
+                requestedPrefs(LocalApiKeepAliveService.this).edit()
+                        .putBoolean(KEY_REQUESTED, false).apply();
+                stopSelf();
+                return;
             }
-
-            // 尝试从共享文件刷新 auth
-            if (capture != null && capture.getBestAuth() == null) {
-                boolean loaded = capture.loadFromSharedFile();
-                if (loaded) {
-                    Log.i(TAG, "从共享文件加载 auth 成功");
-                    updateNotification();
-                }
+            try {
+                Intent ping = new Intent(ACTION_HEARTBEAT);
+                ping.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
+                ping.putExtra(EXTRA_CONTROL_TOKEN, CONTROL_TOKEN);
+                ping.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+                sendOrderedBroadcast(ping, null, new BroadcastReceiver() {
+                    @Override public void onReceive(Context context, Intent intent) {
+                        if (getResultCode() != Activity.RESULT_OK) return;
+                        String state = getResultData();
+                        lastAckElapsed = SystemClock.elapsedRealtime();
+                        lastGatewayRunning = state != null && state.endsWith("|running");
+                        android.os.Bundle details = getResultExtras(false);
+                        int gatewayPort = details == null
+                                ? 0 : details.getInt("gateway_port", 0);
+                        boolean enabled = state != null && state.startsWith("enabled|");
+                        PublicTunnelManager.onGatewayState(
+                                LocalApiKeepAliveService.this, enabled,
+                                lastGatewayRunning, gatewayPort);
+                        PinggyTunnelManager.onGatewayState(
+                                LocalApiKeepAliveService.this, enabled,
+                                lastGatewayRunning, gatewayPort);
+                        if (state != null && state.startsWith("disabled|")) {
+                            requestedPrefs(LocalApiKeepAliveService.this).edit()
+                                    .putBoolean(KEY_REQUESTED, false).apply();
+                            stopSelf();
+                        }
+                    }
+                }, handler, Activity.RESULT_CANCELED, null, null);
+                lastBroadcastElapsed = now;
+            } catch (Throwable t) {
+                lastError = "发送保活心跳失败：" + safeMessage(t);
+                Log.w(TAG, lastError, t);
             }
-
             handler.postDelayed(this, HEARTBEAT_MS);
         }
     };
-
-    // ════════════════════════════════════════════════════════════
-    //  静态控制接口
-    // ════════════════════════════════════════════════════════════
 
     static boolean setEnabled(Context context, boolean enabled) {
         if (context == null) {
@@ -110,17 +134,31 @@ public final class LocalApiKeepAliveService extends Service {
         }
     }
 
-    static void putStatus(android.os.Bundle result) {
-        result.putBoolean("running", running);
-        result.putBoolean("requested", running);
-        result.putBoolean("gateway_running", LocalApiGateway.isRunning());
-        result.putInt("gateway_port", gatewayPort);
-        result.putString("error", lastError == null ? "" : lastError);
+    static void sendProtocolControl(Context context, String protocol) {
+        if (context == null) return;
+        Intent control = new Intent(ACTION_CONTROL)
+                .setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER))
+                .putExtra(EXTRA_CONTROL_TOKEN, CONTROL_TOKEN)
+                .putExtra(EXTRA_PROTOCOL, protocol)
+                .addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+        context.sendBroadcast(control);
     }
 
-    // ════════════════════════════════════════════════════════════
-    //  Service 生命周期
-    // ════════════════════════════════════════════════════════════
+    static void acknowledge(boolean enabled, boolean gatewayRunning) {
+        lastAckElapsed = SystemClock.elapsedRealtime();
+        lastGatewayRunning = gatewayRunning;
+        if (!enabled) lastError = "GLM 已关闭本地 API";
+    }
+
+    static void putStatus(android.os.Bundle result) {
+        long now = SystemClock.elapsedRealtime();
+        result.putBoolean("running", running);
+        result.putBoolean("requested", running || startedElapsed > 0L);
+        result.putBoolean("gateway_running", lastGatewayRunning);
+        result.putLong("last_broadcast_age_ms", age(now, lastBroadcastElapsed));
+        result.putLong("last_ack_age_ms", age(now, lastAckElapsed));
+        result.putString("error", lastError == null ? "" : lastError);
+    }
 
     @Override public void onCreate() {
         super.onCreate();
@@ -129,24 +167,13 @@ public final class LocalApiKeepAliveService extends Service {
             startForeground(NOTIFICATION_ID, buildNotification());
             acquireWakeLock();
             running = true;
+            startedElapsed = SystemClock.elapsedRealtime();
             lastError = "";
-
-            // 创建 GlmCapture 并从共享文件加载 auth
-            capture = new GlmCapture();
-            boolean loaded = capture.loadFromSharedFile();
-            Log.i(TAG, "初始加载 auth: " + (loaded ? "成功" : "失败（等待模块捕获）"));
-
-            // 创建 GlmBackend
-            backend = new GlmBackend(capture);
-
-            // 启动网关
-            startGateway();
-
             handler.removeCallbacks(heartbeat);
             handler.post(heartbeat);
-            Log.i(TAG, "GLMKit 网关服务已启动（自身进程）");
+            Log.i(TAG, "local API foreground keepalive started");
         } catch (Throwable t) {
-            lastError = "服务初始化失败：" + safeMessage(t);
+            lastError = "前台保活初始化失败：" + safeMessage(t);
             Log.e(TAG, lastError, t);
             stopSelf();
         }
@@ -156,22 +183,31 @@ public final class LocalApiKeepAliveService extends Service {
         boolean systemRestart = intent == null && isRequested(this);
         if (!systemRestart && (intent == null || !ACTION_START.equals(intent.getAction())
                 || !CONTROL_TOKEN.equals(intent.getStringExtra(EXTRA_CONTROL_TOKEN)))) {
-            lastError = "拒绝了无效的启动请求";
+            lastError = "拒绝了无效的保活启动请求";
             requestedPrefs(this).edit().putBoolean(KEY_REQUESTED, false).apply();
             stopSelf(startId);
             return START_NOT_STICKY;
         }
         requestedPrefs(this).edit().putBoolean(KEY_REQUESTED, true).apply();
+        if (!isRequested(this)) {
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
+        handler.removeCallbacks(heartbeat);
+        handler.post(heartbeat);
         return START_STICKY;
     }
 
     @Override public void onDestroy() {
         running = false;
+        lastGatewayRunning = false;
+        startedElapsed = 0L;
         handler.removeCallbacks(heartbeat);
+        PublicTunnelManager.shutdown(this);
+        PinggyTunnelManager.shutdown(this);
         releaseWakeLock();
-        try { LocalApiGateway.stop(); } catch (Throwable ignored) {}
         try { stopForeground(true); } catch (Throwable ignored) {}
-        Log.i(TAG, "GLMKit 网关服务已停止");
+        Log.i(TAG, "local API foreground keepalive stopped");
         super.onDestroy();
     }
 
@@ -179,93 +215,48 @@ public final class LocalApiKeepAliveService extends Service {
         return null;
     }
 
-    // ════════════════════════════════════════════════════════════
-    //  网关启动
-    // ════════════════════════════════════════════════════════════
-
-    private void startGateway() {
-        try {
-            // 读取配置
-            SharedPreferences settings = getSharedPreferences("glmkit_settings", Context.MODE_PRIVATE);
-            int port = settings.getInt("port", 8765);
-            String apiKey = settings.getString("api_key", null);
-
-            LocalApiGateway.setListenPort(port);
-            LocalApiGateway.setApiKey(apiKey);
-            Log.i(TAG, "配置端口: " + port + ", API Key: " + (apiKey != null && !apiKey.isEmpty() ? "已启用" : "未启用"));
-
-            // 启动网关
-            int actualPort = LocalApiGateway.start(this, backend);
-            gatewayPort = actualPort;
-
-            if (LocalApiGateway.isRunning()) {
-                Log.i(TAG, "✓ 网关已启动，端口: " + actualPort);
-                lastError = "";
-
-                // 保存端口到 SharedPreferences
-                settings.edit()
-                        .putBoolean("gateway_running", true)
-                        .putInt("gateway_port", actualPort)
-                        .apply();
-
-                updateNotification();
-            } else {
-                lastError = "网关启动失败（端口被占用）";
-                Log.e(TAG, lastError);
-            }
-        } catch (Throwable t) {
-            lastError = "网关启动异常: " + safeMessage(t);
-            Log.e(TAG, lastError, t);
-        }
-    }
-
-    // ════════════════════════════════════════════════════════════
-    //  通知与 WakeLock
-    // ════════════════════════════════════════════════════════════
-
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT < 26) return;
         NotificationManager manager = (NotificationManager)
                 getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager == null) return;
         NotificationChannel channel = new NotificationChannel(CHANNEL_ID,
-                "GLM 本地 API", NotificationManager.IMPORTANCE_LOW);
-        channel.setDescription("GLMKit 本地 API 网关运行中");
+                UiLanguage.text(this, "GLM 本地 API", "GLM Local API"),
+                NotificationManager.IMPORTANCE_LOW);
+        channel.setDescription(UiLanguage.text(this,
+                "保持本地 API 与 SSE 流在后台可用",
+                "Keeps the local API and SSE streams available in the background"));
         channel.setShowBadge(false);
         manager.createNotificationChannel(channel);
     }
 
     private Notification buildNotification() {
-        Intent launch = new Intent(this, SettingsActivity.class);
-        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
-        PendingIntent pending = PendingIntent.getActivity(this, 0, launch, flags);
-
-        String content = LocalApiGateway.isRunning()
-                ? "本地 API 网关运行中 (端口 " + gatewayPort + ")"
-                : "正在启动网关...";
-
+        Intent launch = getPackageManager().getLaunchIntentForPackage(TARGET_PACKAGE);
+        PendingIntent pending = null;
+        if (launch != null) {
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
+            pending = PendingIntent.getActivity(this, 0, launch, flags);
+        }
         Notification.Builder builder = Build.VERSION.SDK_INT >= 26
                 ? new Notification.Builder(this, CHANNEL_ID)
                 : new Notification.Builder(this);
         builder.setSmallIcon(android.R.drawable.stat_notify_sync)
-                .setContentTitle("GLMKit 网关")
-                .setContentText(content)
+                .setContentTitle(UiLanguage.text(this,
+                        "GLM 本地 API 正在运行", "GLM Local API is running"))
+                .setContentText(UiLanguage.text(this,
+                        PublicTunnelManager.isConnected() || PinggyTunnelManager.isConnected()
+                                ? "本地、局域网与公网入口均在运行"
+                                : "正在保持后台监听与流式响应稳定",
+                        PublicTunnelManager.isConnected() || PinggyTunnelManager.isConnected()
+                                ? "Local, LAN, and public endpoints are active"
+                                : "Keeping background listening and streaming responses stable"))
                 .setCategory(Notification.CATEGORY_SERVICE)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
-                .setShowWhen(false)
-                .setContentIntent(pending);
+                .setShowWhen(false);
+        if (pending != null) builder.setContentIntent(pending);
         return builder.build();
-    }
-
-    private void updateNotification() {
-        try {
-            NotificationManager nm = (NotificationManager)
-                    getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm != null) nm.notify(NOTIFICATION_ID, buildNotification());
-        } catch (Throwable ignored) {}
     }
 
     private void acquireWakeLock() {
@@ -289,16 +280,16 @@ public final class LocalApiKeepAliveService extends Service {
         wakeLock = null;
     }
 
-    // ════════════════════════════════════════════════════════════
-    //  工具方法
-    // ════════════════════════════════════════════════════════════
-
     private static SharedPreferences requestedPrefs(Context context) {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
     private static boolean isRequested(Context context) {
         return requestedPrefs(context).getBoolean(KEY_REQUESTED, false);
+    }
+
+    private static long age(long now, long value) {
+        return value <= 0L ? -1L : Math.max(0L, now - value);
     }
 
     private static String safeMessage(Throwable t) {

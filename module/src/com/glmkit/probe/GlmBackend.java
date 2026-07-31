@@ -65,12 +65,10 @@ public class GlmBackend implements LocalApiGateway.Backend {
         return sb.toString();
     }
 
-    @Override
     public String lastError() {
         return lastError;
     }
 
-    @Override
     public String diagnosticInfo() {
         StringBuilder sb = new StringBuilder();
         sb.append("okHttpClient: ").append(capture.getOkHttpClient() != null ? "captured" : "waiting").append("\n");
@@ -88,7 +86,6 @@ public class GlmBackend implements LocalApiGateway.Backend {
         return sb.toString();
     }
 
-    @Override
     public String getCapturedModel() {
         return capture.getCapturedModel();
     }
@@ -110,8 +107,8 @@ public class GlmBackend implements LocalApiGateway.Backend {
         // 构造 GLM API 请求体
         JSONObject glmReq = buildGlmRequestBody(req);
         String bodyStr = glmReq.toString();
-        log("→ GLM 请求: model=" + req.model + ", stream=" + req.stream
-            + ", msgs=" + req.messages.length() + ", body=" + truncate(bodyStr, 300));
+        log("→ GLM 请求: model=" + req.requestedModel + ", stream=" + (sink != null)
+            + ", prompt=" + truncate(req.prompt, 100) + ", body=" + truncate(bodyStr, 300));
 
         // 解析 GLM API URL
         String apiUrl = resolveGlmApiUrl();
@@ -120,7 +117,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
         // 通过反射调用 OkHttp 发起请求
         Object response;
         try {
-            response = executeOkHttpRequest(apiUrl, bodyStr, req.stream);
+            response = executeOkHttpRequest(apiUrl, bodyStr, sink != null);
         } catch (LocalApiGateway.GatewayException ge) {
             lastError = ge.getMessage();
             log("✗ OkHttp 请求失败: " + ge.getMessage());
@@ -157,7 +154,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
         // v1.0.63: GLM API 总是返回 SSE 格式，即使 stream=false
         try {
             LocalApiGateway.CompletionResult result;
-            if (req.stream) {
+            if (sink != null) {
                 result = parseStreamResponse(response, req, sink);
             } else {
                 // 非流式请求也用流式解析，用 no-op sink
@@ -193,7 +190,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
             return;
         }
         // 读取设置（通过 LocalApiGateway 静态方法）
-        boolean autoDelete = LocalApiGateway.isAutoDeleteConversation();
+        boolean autoDelete = false; // TODO: re-enable auto-delete with new gateway
         if (!autoDelete) {
             log("自动删除: 开关关闭，跳过 (convId=" + truncate(convId, 20) + ")");
             return;
@@ -505,14 +502,14 @@ public class GlmBackend implements LocalApiGateway.Backend {
         String suffix = "fast"; // 默认后缀
 
         // 优先从请求的 model 字段解析（用户选择的模型）
-        if (req.model != null && !req.model.isEmpty()) {
-            int colonIdx = req.model.indexOf(':');
+        if (req.requestedModel != null && !req.requestedModel.isEmpty()) {
+            int colonIdx = req.requestedModel.indexOf(':');
             if (colonIdx > 0) {
-                assistantId = req.model.substring(0, colonIdx);
-                suffix = req.model.substring(colonIdx + 1);
-            } else if (req.model.length() >= 20) {
+                assistantId = req.requestedModel.substring(0, colonIdx);
+                suffix = req.requestedModel.substring(colonIdx + 1);
+            } else if (req.requestedModel.length() >= 20) {
                 // 纯 assistant_id 无后缀
-                assistantId = req.model;
+                assistantId = req.requestedModel;
             }
         }
 
@@ -538,7 +535,8 @@ public class GlmBackend implements LocalApiGateway.Backend {
         // 消息转换 — 将 OpenAI messages 转为 GLM 格式
         // GLM 格式: [{"role": "user", "content": [{"type": "text", "text": "..."}]}]
         // 参考项目将所有消息合并为一个 prompt
-        JSONArray glmMessages = convertMessagesToGlm(req.messages);
+        JSONArray openaiMsgs = new JSONArray(req.prompt);
+        JSONArray glmMessages = convertMessagesToGlm(openaiMsgs);
         payload.put("messages", glmMessages);
 
         // meta_data
@@ -1212,7 +1210,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
         }
 
         return new LocalApiGateway.CompletionResult(
-            content, reasoning, finishReason, promptTokens, completionTokens, toolCalls);
+            content, reasoning, finishReason);
     }
 
     // ════════════════════════════════════════════════════════════
@@ -1389,7 +1387,7 @@ public class GlmBackend implements LocalApiGateway.Backend {
         return new LocalApiGateway.CompletionResult(
             fullContent.toString(),
             fullReasoning.length() > 0 ? fullReasoning.toString() : null,
-            finishReason, promptTokens, completionTokens);
+            finishReason);
     }
 
     // ════════════════════════════════════════════════════════════

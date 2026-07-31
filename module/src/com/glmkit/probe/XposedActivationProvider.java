@@ -5,113 +5,337 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.database.Cursor;
-import android.database.MatrixCursor;
 import android.net.Uri;
+import android.os.Binder;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Looper;
 import android.util.Log;
 
 /**
- * Xposed 激活检测 ContentProvider。
+ * Modern Xposed activation bridge.
  *
- * <p>Xposed 框架在加载模块时会调用模块应用中的 ContentProvider。
- * 本 Provider 在 onCreate 时设置静态标志 {@code activated = true}，
- * SettingsActivity 通过 {@link #isActivated()} 查询此标志判断模块是否已被 Xposed 加载。</p>
- *
- * <p>同时提供 query 接口，允许外部应用通过 ContentResolver 查询模块激活状态。
- * Authorities: com.glmkit.proxy.XposedService</p>
+ * <p>Modern libxposed intentionally does not inject a module into its own application.  Instead,
+ * the framework delivers its service Binder through {@code <applicationId>.XposedService}.  This
+ * provider implements that official delivery endpoint and also accepts a separately authenticated
+ * heartbeat from the GLM target process.</p>
  */
 public final class XposedActivationProvider extends ContentProvider {
+    static final String AUTHORITY = "com.glmkit.probe.XposedService";
+    static final String METHOD_REPORT_TARGET_ACTIVE = "ReportGLMActive";
+    static final String METHOD_SET_LOCAL_API_KEEPALIVE = "SetLocalApiKeepAlive";
+    static final String METHOD_GET_LOCAL_API_KEEPALIVE = "GetLocalApiKeepAlive";
+    static final String METHOD_ACK_LOCAL_API_KEEPALIVE = "AckLocalApiKeepAlive";
+    static final String METHOD_CONFIGURE_PUBLIC_TUNNEL = "ConfigureLocalApiPublicTunnel";
+    static final String METHOD_SET_PUBLIC_TUNNEL = "SetLocalApiPublicTunnel";
+    static final String METHOD_GET_PUBLIC_TUNNEL = "GetLocalApiPublicTunnel";
+    static final String METHOD_SET_PINGGY_TUNNEL = "SetLocalApiPinggyTunnel";
+    static final String METHOD_GET_PINGGY_TUNNEL = "GetLocalApiPinggyTunnel";
 
-    private static final String TAG = "GLMKit-Activation";
+    private static final String METHOD_SEND_BINDER = "SendBinder";
+    private static final String SERVICE_DESCRIPTOR = "io.github.libxposed.service.IXposedService";
+    private static final String TARGET_PACKAGE = "com.zhipuai.qingyan";
     private static final String PREFS = "glmkit_activation";
-    private static final String KEY_ACTIVATED = "xposed_activated";
+    private static final String KEY_TARGET_AT = "target_at";
+    private static final String KEY_TARGET_VERSION_NAME = "target_version_name";
+    private static final String KEY_TARGET_VERSION_CODE = "target_version_code";
+    private static final String KEY_FRAMEWORK_AT = "framework_at";
+    private static final long TARGET_FRESH_MS = 7L * 24L * 60L * 60L * 1000L;
+    private static final String TAG = "GLMKitActivation";
 
-    // 静态标志 — Xposed 加载模块后，ContentProvider.onCreate 被调用时置为 true
-    private static volatile boolean activated = false;
+    private static volatile IBinder frameworkBinder;
+    private static volatile Runnable stateListener;
 
-    // ════════════════════════════════════════════════════════════
-    //  公共 API
-    // ════════════════════════════════════════════════════════════
-
-    /**
-     * 返回 Xposed 框架是否已加载本模块。
-     * 当 ContentProvider.onCreate 被系统调用时（模块被 Xposed 加载）置为 true。
-     */
-    public static boolean isActivated() {
-        return activated;
-    }
-
-    // ════════════════════════════════════════════════════════════
-    //  ContentProvider 生命周期
-    // ════════════════════════════════════════════════════════════
-
-    @Override public boolean onCreate() {
-        // ContentProvider.onCreate 在应用进程启动时被调用。
-        // 如果是 Xposed 框架加载了本模块，此 Provider 会在目标应用进程中创建。
-        // 但在模块自身进程中也会创建（当用户打开 SettingsActivity 时）。
-        // 真正的激活检测依赖于 Xposed 框架在目标进程中注入的标志。
-        activated = true;
-        Log.i(TAG, "XposedActivationProvider created — module is loaded");
-
-        // 持久化激活状态
-        try {
-            Context context = getContext();
-            if (context != null) {
-                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                        .edit()
-                        .putBoolean(KEY_ACTIVATED, true)
-                        .apply();
-            }
-        } catch (Throwable ignored) {}
-
+    @Override
+    public boolean onCreate() {
         return true;
     }
 
-    // ════════════════════════════════════════════════════════════
-    //  ContentProvider 查询接口
-    // ════════════════════════════════════════════════════════════
-
-    @Override public Cursor query(Uri uri, String[] projection,
-                                   String selection, String[] selectionArgs,
-                                   String sortOrder) {
-        // 返回激活状态游标
-        MatrixCursor cursor = new MatrixCursor(new String[]{
-                "activated", "package", "target", "version"
-        });
-        cursor.addRow(new Object[]{
-                activated ? 1 : 0,
-                "com.glmkit.proxy",
-                "com.zhipuai.qingyan",
-                getModuleVersion()
-        });
-        return cursor;
+    @Override
+    public Bundle call(String method, String arg, Bundle extras) {
+        if (METHOD_SEND_BINDER.equals(method) && extras != null) {
+            return receiveFrameworkBinder(extras.getBinder("binder"));
+        }
+        if (METHOD_REPORT_TARGET_ACTIVE.equals(method)) {
+            return receiveTargetHeartbeat(extras);
+        }
+        if (METHOD_SET_LOCAL_API_KEEPALIVE.equals(method)) {
+            return setLocalApiKeepAlive(extras);
+        }
+        if (METHOD_GET_LOCAL_API_KEEPALIVE.equals(method)) {
+            return getLocalApiKeepAlive();
+        }
+        if (METHOD_ACK_LOCAL_API_KEEPALIVE.equals(method)) {
+            return acknowledgeLocalApiKeepAlive(extras);
+        }
+        if (METHOD_CONFIGURE_PUBLIC_TUNNEL.equals(method)) {
+            return configurePublicTunnel(extras);
+        }
+        if (METHOD_SET_PUBLIC_TUNNEL.equals(method)) {
+            return setPublicTunnel(extras);
+        }
+        if (METHOD_GET_PUBLIC_TUNNEL.equals(method)) {
+            return getPublicTunnel();
+        }
+        if (METHOD_SET_PINGGY_TUNNEL.equals(method)) {
+            return setPinggyTunnel(extras);
+        }
+        if (METHOD_GET_PINGGY_TUNNEL.equals(method)) {
+            return getPinggyTunnel();
+        }
+        return null;
     }
 
-    @Override public String getType(Uri uri) {
-        return "vnd.android.cursor.dir/vnd.glmkit.activation";
+    private Bundle setLocalApiKeepAlive(Bundle extras) {
+        Bundle result = new Bundle();
+        Context context = getContext();
+        int callingUid = Binder.getCallingUid();
+        if (context == null || !uidOwnsPackage(context, callingUid, TARGET_PACKAGE)) {
+            Log.w(TAG, "rejected keepalive control from uid=" + callingUid);
+            result.putBoolean("accepted", false);
+            result.putString("error", "caller is not GLM");
+            return result;
+        }
+        boolean enabled = extras != null && extras.getBoolean("enabled", false);
+        boolean accepted = LocalApiKeepAliveService.setEnabled(context, enabled);
+        result.putBoolean("accepted", accepted);
+        result.putBoolean("enabled", enabled);
+        LocalApiKeepAliveService.putStatus(result);
+        return result;
     }
 
-    @Override public Uri insert(Uri uri, ContentValues values) {
-        throw new UnsupportedOperationException("Read-only provider");
+    private Bundle getLocalApiKeepAlive() {
+        Bundle result = new Bundle();
+        Context context = getContext();
+        int callingUid = Binder.getCallingUid();
+        if (context == null || !uidOwnsPackage(context, callingUid, TARGET_PACKAGE)) {
+            result.putBoolean("accepted", false);
+            result.putString("error", "caller is not GLM");
+            return result;
+        }
+        result.putBoolean("accepted", true);
+        LocalApiKeepAliveService.putStatus(result);
+        return result;
     }
 
-    @Override public int delete(Uri uri, String selection, String[] selectionArgs) {
-        throw new UnsupportedOperationException("Read-only provider");
+    private Bundle acknowledgeLocalApiKeepAlive(Bundle extras) {
+        Bundle result = new Bundle();
+        Context context = getContext();
+        int callingUid = Binder.getCallingUid();
+        if (context == null || !uidOwnsPackage(context, callingUid, TARGET_PACKAGE)) {
+            result.putBoolean("accepted", false);
+            return result;
+        }
+        boolean enabled = extras != null && extras.getBoolean("enabled", false);
+        boolean gatewayRunning = extras != null
+                && extras.getBoolean("gateway_running", false);
+        LocalApiKeepAliveService.acknowledge(enabled, gatewayRunning);
+        if (!enabled) LocalApiKeepAliveService.setEnabled(context, false);
+        result.putBoolean("accepted", true);
+        return result;
     }
 
-    @Override public int update(Uri uri, ContentValues values,
-                                 String selection, String[] selectionArgs) {
-        throw new UnsupportedOperationException("Read-only provider");
+    private Bundle configurePublicTunnel(Bundle extras) {
+        Context context = getContext();
+        int callingUid = Binder.getCallingUid();
+        if (context == null || !uidOwnsPackage(context, callingUid, TARGET_PACKAGE)) {
+            Log.w(TAG, "rejected public tunnel configuration from uid=" + callingUid);
+            Bundle result = new Bundle();
+            result.putBoolean("accepted", false);
+            result.putString("error", "caller is not GLM");
+            return result;
+        }
+        return PublicTunnelManager.configure(context, extras);
     }
 
-    private String getModuleVersion() {
+    private Bundle setPublicTunnel(Bundle extras) {
+        Context context = getContext();
+        int callingUid = Binder.getCallingUid();
+        if (context == null || !uidOwnsPackage(context, callingUid, TARGET_PACKAGE)) {
+            Log.w(TAG, "rejected public tunnel control from uid=" + callingUid);
+            Bundle result = new Bundle();
+            result.putBoolean("accepted", false);
+            result.putString("error", "caller is not GLM");
+            return result;
+        }
+        boolean enabled = extras != null && extras.getBoolean("enabled", false);
+        return PublicTunnelManager.setRequested(context, enabled);
+    }
+
+    private Bundle getPublicTunnel() {
+        Context context = getContext();
+        int callingUid = Binder.getCallingUid();
+        if (context == null || !uidOwnsPackage(context, callingUid, TARGET_PACKAGE)) {
+            Bundle result = new Bundle();
+            result.putBoolean("accepted", false);
+            result.putString("error", "caller is not GLM");
+            return result;
+        }
+        return PublicTunnelManager.status(context);
+    }
+
+    private Bundle setPinggyTunnel(Bundle extras) {
+        Context context = getContext();
+        int callingUid = Binder.getCallingUid();
+        if (context == null || !uidOwnsPackage(context, callingUid, TARGET_PACKAGE)) {
+            Log.w(TAG, "rejected Pinggy tunnel control from uid=" + callingUid);
+            Bundle result = new Bundle();
+            result.putBoolean("accepted", false);
+            result.putString("error", "caller is not GLM");
+            return result;
+        }
+        boolean enabled = extras != null && extras.getBoolean("enabled", false);
+        return PinggyTunnelManager.setRequested(context, enabled);
+    }
+
+    private Bundle getPinggyTunnel() {
+        Context context = getContext();
+        int callingUid = Binder.getCallingUid();
+        if (context == null || !uidOwnsPackage(context, callingUid, TARGET_PACKAGE)) {
+            Bundle result = new Bundle();
+            result.putBoolean("accepted", false);
+            result.putString("error", "caller is not GLM");
+            return result;
+        }
+        return PinggyTunnelManager.status(context);
+    }
+
+    private Bundle receiveFrameworkBinder(final IBinder binder) {
+        Bundle result = new Bundle();
+        if (binder == null) {
+            result.putBoolean("accepted", false);
+            return result;
+        }
         try {
+            String descriptor = binder.getInterfaceDescriptor();
+            if (!SERVICE_DESCRIPTOR.equals(descriptor)) {
+                Log.w(TAG, "ignored unexpected service descriptor: " + descriptor);
+                result.putBoolean("accepted", false);
+                return result;
+            }
+            frameworkBinder = binder;
+            binder.linkToDeath(new IBinder.DeathRecipient() {
+                @Override public void binderDied() {
+                    if (frameworkBinder == binder) frameworkBinder = null;
+                    notifyStateChanged();
+                }
+            }, 0);
             Context context = getContext();
             if (context != null) {
-                android.content.pm.PackageInfo pi = context.getPackageManager()
-                        .getPackageInfo(context.getPackageName(), 0);
-                return pi.versionName;
+                prefs(context).edit().putLong(KEY_FRAMEWORK_AT,
+                        System.currentTimeMillis()).apply();
+            }
+            result.putBoolean("accepted", true);
+            Log.i(TAG, "modern Xposed service connected");
+            notifyStateChanged();
+        } catch (Throwable t) {
+            Log.w(TAG, "failed to accept Xposed service", t);
+            result.putBoolean("accepted", false);
+        }
+        return result;
+    }
+
+    private Bundle receiveTargetHeartbeat(Bundle extras) {
+        Bundle result = new Bundle();
+        Context context = getContext();
+        int callingUid = Binder.getCallingUid();
+        result.putBoolean("accepted",
+                recordTargetHeartbeat(context, callingUid, extras, "provider"));
+        return result;
+    }
+
+    /** Shared by the provider and the explicit-broadcast package-visibility fallback. */
+    static boolean recordTargetHeartbeat(Context context, int callingUid, Bundle extras,
+                                         String channel) {
+        if (context == null || !uidOwnsPackage(context, callingUid, TARGET_PACKAGE)) {
+            Log.w(TAG, "rejected target heartbeat from uid=" + callingUid
+                    + ", channel=" + channel);
+            return false;
+        }
+        persistTargetHeartbeat(context, extras, channel, callingUid);
+        return true;
+    }
+
+    static void recordTrustedTargetHeartbeat(Context context, Bundle extras, String channel) {
+        if (context == null) return;
+        persistTargetHeartbeat(context, extras, channel, -1);
+    }
+
+    private static void persistTargetHeartbeat(Context context, Bundle extras,
+                                               String channel, int callingUid) {
+        SharedPreferences.Editor edit = prefs(context).edit()
+                .putLong(KEY_TARGET_AT, System.currentTimeMillis());
+        if (extras != null) {
+            edit.putString(KEY_TARGET_VERSION_NAME,
+                    extras.getString("versionName", ""));
+            edit.putLong(KEY_TARGET_VERSION_CODE,
+                    extras.getLong("versionCode", 0L));
+        }
+        edit.apply();
+        Log.i(TAG, "GLM target heartbeat accepted, uid=" + callingUid
+                + ", channel=" + channel);
+        notifyStateChanged();
+    }
+
+    private static boolean uidOwnsPackage(Context context, int uid, String wanted) {
+        try {
+            String[] packages = context.getPackageManager().getPackagesForUid(uid);
+            if (packages == null) return false;
+            for (String pkg : packages) {
+                if (wanted.equals(pkg)) return true;
             }
         } catch (Throwable ignored) {}
-        return "unknown";
+        return false;
     }
+
+    static boolean isFrameworkConnected() {
+        IBinder binder = frameworkBinder;
+        return binder != null && binder.isBinderAlive() && binder.pingBinder();
+    }
+
+    static boolean isTargetRecentlyActive(Context context) {
+        long at = targetHeartbeatAt(context);
+        long age = System.currentTimeMillis() - at;
+        return at > 0L && age >= 0L && age <= TARGET_FRESH_MS;
+    }
+
+    static long targetHeartbeatAt(Context context) {
+        return prefs(context).getLong(KEY_TARGET_AT, 0L);
+    }
+
+    static String targetVersion(Context context) {
+        SharedPreferences p = prefs(context);
+        String name = p.getString(KEY_TARGET_VERSION_NAME, "");
+        long code = p.getLong(KEY_TARGET_VERSION_CODE, 0L);
+        if (name == null || name.length() == 0) return "";
+        return code > 0L ? name + " (" + code + ")" : name;
+    }
+
+    static void setStateListener(Runnable listener) {
+        stateListener = listener;
+        if (listener != null) notifyStateChanged();
+    }
+
+    private static SharedPreferences prefs(Context context) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    private static void notifyStateChanged() {
+        final Runnable listener = stateListener;
+        if (listener == null) return;
+        new Handler(Looper.getMainLooper()).post(new Runnable() {
+            @Override public void run() {
+                if (stateListener == listener) listener.run();
+            }
+        });
+    }
+
+    @Override public Cursor query(Uri uri, String[] projection, String selection,
+                                  String[] selectionArgs, String sortOrder) { return null; }
+    @Override public String getType(Uri uri) { return null; }
+    @Override public Uri insert(Uri uri, ContentValues values) { return null; }
+    @Override public int delete(Uri uri, String selection, String[] selectionArgs) { return 0; }
+    @Override public int update(Uri uri, ContentValues values, String selection,
+                                String[] selectionArgs) { return 0; }
 }

@@ -1,19 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="moddesc">GLM (智谱清言) 本地 API 反代增强模块。\n\n功能：在设备上启动 OpenAI 兼容的本地 HTTP 端点，通过 Hook 目标应用的网络层捕获认证凭据，将外部请求透明转发到 GLM 后端，支持 SSE 流式响应。\n\n目标应用：com.zhipuai.qingyan\n模块包名：com.glmkit.proxy</string>
-    <string name="app_name">GLMKit</string>
-    <string name="settings_title">GLMKit 设置</string>
-    <string name="settings_port">本地 API 端口</string>
-    <string name="settings_port_default">8765</string>
-    <string name="settings_status">模块状态</string>
-    <string name="settings_status_active">已激活</string>
-    <string name="settings_status_inactive">未激活</string>
-    <string name="settings_target">目标应用</string>
-    <string name="settings_target_name">智谱清言 (com.zhipuai.qingyan)</string>
-    <string name="settings_api_info">本地 API 地址</string>
-    <string name="settings_api_url">http://127.0.0.1:8765/v1</string>
-    <string name="settings_keepalive">保活服务</string>
-    <string name="settings_keepalive_start">启动保活</string>
-    <string name="settings_keepalive_stop">停止保活</string>
-    <string name="settings_about">关于</string>
-    <string name="settings_about_text">GLMKit\nGLM 本地 API 反代增强模块\n基于 Xposed 框架\n\n用法：\n1. 在 LSPosed 管理器中激活本模块\n2. 选择作用域：智谱清言\n3. 重启智谱清言\n4. 使用 http://127.0.0.1:8765/v1 作为 OpenAI 兼容 API 端点</string>
+    <string name="moddesc">Adds the GLMKit enhancement entry to GLM settings</string>
 </resources>
