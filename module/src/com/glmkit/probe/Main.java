@@ -866,6 +866,8 @@ public class Main extends XposedModule {
                             } catch (Throwable ignored) {}
                         }
                         maybeShowDisclaimer(act);
+                        // v3.7.0+: 设置页混淆名变了，直接在 onResume 显示入口按钮
+                        main.post(new Runnable() { public void run() { showButton(); } });
                     } catch (Throwable ignored) {}
                     return r;
                 }
