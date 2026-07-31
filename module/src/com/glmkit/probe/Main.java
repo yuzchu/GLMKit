@@ -226,12 +226,18 @@ public class Main implements IXposedHookLoadPackage {
         String pkgName = appContext.getPackageName();
 
         // 1) 先读 SharedPreferences 自定义端口（用户在设置页配置的）
+        //    注意: SettingsActivity 是模块自己的 Activity，SharedPreferences 存在 com.glmkit.probe 包下
+        //    必须用模块包名创建 context 才能读到，不能用宿主 appContext
         int customPort = 0;
         String portSource = "默认";
         try {
-            SharedPreferences prefs = appContext.getSharedPreferences("glmkit_settings", android.content.Context.MODE_PRIVATE);
+            android.content.Context modCtx = appContext.createPackageContext("com.glmkit.probe", android.content.Context.CONTEXT_IGNORE_SECURITY);
+            SharedPreferences prefs = modCtx.getSharedPreferences("glmkit_settings", android.content.Context.MODE_PRIVATE);
             customPort = prefs.getInt("port", 0);
-        } catch (Throwable ignored) {}
+            log("读取模块 SharedPreferences: port=" + customPort + " (com.glmkit.probe)");
+        } catch (Throwable t) {
+            log("读取模块 SharedPreferences 失败: " + t.getMessage());
+        }
 
         int port;
         if (customPort >= 1024 && customPort <= 65535) {

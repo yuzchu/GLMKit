@@ -212,7 +212,7 @@ public class LocalApiGateway {
                     }
                 } catch (java.net.BindException be) {
                     log("✗ 端口 " + listenPort + " 已被占用");
-                    // v1.0.73: 顺序递增尝试，不用随机（方便用户找到端口）
+                    // v1.0.74: 顺序递增尝试，不用随机（方便用户找到端口）
                     for (int altPort = listenPort + 1; altPort <= listenPort + 100; altPort++) {
                         try {
                             serverSocket = new ServerSocket();
@@ -1227,7 +1227,7 @@ public class LocalApiGateway {
             + ".ok{color:#0f0}.err{color:#e94560}.warn{color:#fa0}"
             + "</style></head><body>"
             + "<h1>GLMKit 控制面板</h1>"
-            + "<div class=\"status\" style=\"text-align:center;color:#666;font-size:12px\">v1.0.73</div>"
+            + "<div class=\"status\" style=\"text-align:center;color:#666;font-size:12px\">v1.0.74</div>"
 
             // 状态区
             + "<div class=\"card\"><h2>状态</h2>"
