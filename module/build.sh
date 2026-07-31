@@ -80,15 +80,15 @@ if [ ! -f debug.keystore ]; then
     -keyalg RSA -keysize 2048 -validity 10000
 fi
 $APKSIGNER sign --ks debug.keystore --ks-pass pass:android --key-pass pass:android \
-    --out glmkit-v2.0.1.apk $OUT/aligned.apk
+    --out glmkit-v2.0.2.apk $OUT/aligned.apk
 
-echo "DONE -> $(pwd)/glmkit-v2.0.1.apk"
+echo "DONE -> $(pwd)/glmkit-v2.0.2.apk"
 
 # Make a best-effort shared-storage copy for direct installation on a device.
 for PUB in /storage/emulated/0 /sdcard; do
   if [ -d "$PUB" ] \
-      && cp -f glmkit-v2.0.1.apk "$PUB/glmkit-v2.0.1.apk" 2>/dev/null; then
-    echo "COPIED -> $PUB/glmkit-v2.0.1.apk"
+      && cp -f glmkit-v2.0.2.apk "$PUB/glmkit-v2.0.2.apk" 2>/dev/null; then
+    echo "COPIED -> $PUB/glmkit-v2.0.2.apk"
     break
   fi
 done

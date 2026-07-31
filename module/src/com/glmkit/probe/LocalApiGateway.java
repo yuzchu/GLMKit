@@ -86,6 +86,8 @@ final class LocalApiGateway {
         boolean isReady();
         String readinessDetail();
         CompletionResult complete(CompletionRequest request, DeltaSink sink) throws Exception;
+        /** v1.0.x: 返回从宿主 APP 拦截到的模型 ID (assistant_id:chat_mode 格式) */
+        default String getCapturedModel() { return null; }
     }
 
     interface DeltaSink {
@@ -702,6 +704,22 @@ final class LocalApiGateway {
                 return;
             }
             requireAuth(http);
+            // v1.0.x 模型管理端点 (不需要 protocol 检查)
+            if ("POST".equals(http.method) && "/v1/models/capture".equals(http.path)) {
+                writeJson(out, 200, handleCaptureModel());
+                recordSuccess(requestTag);
+                return;
+            }
+            if ("POST".equals(http.method) && "/v1/models/add".equals(http.path)) {
+                writeJson(out, 200, handleAddModel(http.body));
+                recordSuccess(requestTag);
+                return;
+            }
+            if ("POST".equals(http.method) && "/v1/models/delete".equals(http.path)) {
+                writeJson(out, 200, handleDeleteModel(http.body));
+                recordSuccess(requestTag);
+                return;
+            }
             if ("GET".equals(http.method) && "/v1/models".equals(http.path)) {
                 requireProtocol(PROTOCOL_OPENAI);
                 writeJson(out, 200, modelsResponse());
@@ -3789,18 +3807,148 @@ final class LocalApiGateway {
 
     private static JSONObject modelsResponse() throws JSONException {
         JSONArray data = new JSONArray();
-        data.put(modelObject("glm-4-flash", "default", false));
-        data.put(modelObject("glm-4", "default", false));
-        data.put(modelObject("glm-4-plus", "plus", false));
-        data.put(modelObject("glm-4-long", "long", false));
-        data.put(modelObject("glm-4v", "vision", false));
-        // Codex chooses its built-in tool catalogue from the configured model name.
-        // Keep the identity explicit: this name enables Codex compatibility metadata,
-        // while requests still use GLM Android's native default model.
-        data.put(modelObject("gpt-5.4", "default", false)
-                .put("alias_for", "glm-4-flash")
-                .put("compatibility_alias", true));
+        java.util.List<String> models = getPersistentModels();
+        apiLog("[/v1/models] 返回 " + models.size() + " 个模型: " + models);
+        for (String m : models) {
+            data.put(new JSONObject()
+                    .put("id", m)
+                    .put("object", "model")
+                    .put("created", 0)
+                    .put("owned_by", "zhipu"));
+        }
         return new JSONObject().put("object", "list").put("data", data);
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  持久化模型列表 — SharedPreferences (v1.0.x 原始逻辑)
+    // ════════════════════════════════════════════════════════════
+    private static final String PREF_MODELS_KEY = "custom_models";
+
+    private static java.util.List<String> getPersistentModels() {
+        java.util.List<String> models = new java.util.ArrayList<>();
+        apiLog("[getPersistentModels] appContext=" + (appContext != null ? "ok" : "null"));
+        if (appContext != null) {
+            try {
+                android.content.SharedPreferences prefs = appContext.getSharedPreferences("glmkit_settings", android.content.Context.MODE_PRIVATE);
+                String json = prefs.getString(PREF_MODELS_KEY, null);
+                apiLog("[getPersistentModels] stored json=" + (json != null ? json : "null"));
+                if (json != null && !json.isEmpty()) {
+                    JSONArray arr = new JSONArray(json);
+                    for (int i = 0; i < arr.length(); i++) {
+                        String m = arr.getString(i);
+                        if (m != null && !m.isEmpty() && !models.contains(m)) {
+                            models.add(m);
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                apiLog("[getPersistentModels] 读取失败: " + t.getMessage());
+            }
+        }
+        // 空列表时返回两个默认模型 (assistant_id:chat_mode 格式)
+        if (models.isEmpty()) {
+            models.add("65940acff94777010aa6b796:thinking");
+            models.add("65940acff94777010aa6b796:fast");
+            apiLog("[getPersistentModels] 空列表 → 返回2个默认模型");
+        }
+        return models;
+    }
+
+    private static void savePersistentModels(java.util.List<String> models) {
+        if (appContext == null) return;
+        try {
+            JSONArray arr = new JSONArray();
+            for (String m : models) {
+                if (m != null && !m.isEmpty()) arr.put(m);
+            }
+            android.content.SharedPreferences prefs = appContext.getSharedPreferences("glmkit_settings", android.content.Context.MODE_PRIVATE);
+            prefs.edit().putString(PREF_MODELS_KEY, arr.toString()).apply();
+            apiLog("持久化模型列表已保存: " + models.size() + " 个模型");
+        } catch (Throwable t) {
+            apiLog("持久化模型列表保存失败: " + t.getMessage());
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  模型管理端点 (v1.0.x 原始逻辑)
+    // ════════════════════════════════════════════════════════════
+    private static JSONObject handleCaptureModel() throws JSONException {
+        JSONObject resp = new JSONObject();
+        String capturedModel = (backend != null) ? backend.getCapturedModel() : null;
+        apiLog("[/v1/models/capture] backend=" + (backend != null ? "ok" : "null") + " capturedModel=" + (capturedModel != null ? capturedModel : "null"));
+        if (capturedModel == null || capturedModel.isEmpty()) {
+            resp.put("success", false);
+            resp.put("message", "当前没有捕获到模型。步骤：1) 打开智谱清言APP 2) 发送任意消息 3) 等待hook捕获 4) 再点此按钮");
+            return resp;
+        }
+        java.util.List<String> models = getPersistentModels();
+        if (!models.contains(capturedModel)) {
+            models.add(capturedModel);
+            savePersistentModels(models);
+            resp.put("success", true);
+            resp.put("message", "模型已捕获并添加到列表: " + capturedModel);
+        } else {
+            resp.put("success", true);
+            resp.put("message", "模型已在列表中: " + capturedModel);
+        }
+        resp.put("model", capturedModel);
+        resp.put("models", new JSONArray(models));
+        return resp;
+    }
+
+    private static JSONObject handleAddModel(byte[] body) throws JSONException {
+        JSONObject resp = new JSONObject();
+        if (body == null || body.length == 0) {
+            resp.put("success", false);
+            resp.put("message", "请求体为空");
+            return resp;
+        }
+        JSONObject req = new JSONObject(new String(body, StandardCharsets.UTF_8));
+        String model = req.optString("model", "");
+        if (model.isEmpty()) {
+            resp.put("success", false);
+            resp.put("message", "model 字段为空");
+            return resp;
+        }
+        java.util.List<String> models = getPersistentModels();
+        if (!models.contains(model)) {
+            models.add(model);
+            savePersistentModels(models);
+            resp.put("success", true);
+            resp.put("message", "模型已添加: " + model);
+        } else {
+            resp.put("success", true);
+            resp.put("message", "模型已存在: " + model);
+        }
+        resp.put("models", new JSONArray(models));
+        return resp;
+    }
+
+    private static JSONObject handleDeleteModel(byte[] body) throws JSONException {
+        JSONObject resp = new JSONObject();
+        if (body == null || body.length == 0) {
+            resp.put("success", false);
+            resp.put("message", "请求体为空");
+            return resp;
+        }
+        JSONObject req = new JSONObject(new String(body, StandardCharsets.UTF_8));
+        String model = req.optString("model", "");
+        if (model.isEmpty()) {
+            resp.put("success", false);
+            resp.put("message", "model 字段为空");
+            return resp;
+        }
+        java.util.List<String> models = getPersistentModels();
+        if (models.remove(model)) {
+            savePersistentModels(models);
+            resp.put("success", true);
+            resp.put("message", "模型已删除: " + model);
+        } else {
+            resp.put("success", false);
+            resp.put("message", "模型不在列表中: " + model);
+        }
+        resp.put("models", new JSONArray(models));
+        return resp;
     }
 
     private static JSONObject modelObject(String id, String nativeModel, boolean reasoning)
