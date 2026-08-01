@@ -3769,7 +3769,9 @@ final class LocalApiGateway {
                 || lower.startsWith("gpt-") || lower.contains("codex")
                 || lower.matches("o[1-9].*") || lower.startsWith("claude-")
                 || lower.startsWith("sonnet") || lower.startsWith("opus")
-                || lower.startsWith("haiku")) {
+                || lower.startsWith("haiku")
+                // v2.0.4: GLM assistant_id 格式 (如 65940acff94777010aa6b796:fast)
+                || lower.matches("[0-9a-f]{24}(:[a-z0-9_]+)?")) {
             nativeModel = "default";
         } else if (lower.equals("glm-4v") || lower.equals("glm-vision")
                 || lower.equals("vision")) {

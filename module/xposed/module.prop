@@ -1,7 +1,7 @@
 id=com.glmkit.proxy
 name=GLMKit
-version=v2.0.3
-versionCode=203
+version=v2.0.4
+versionCode=204
 author=GLMKit
 description=GLM (智谱清言) 全功能增强模块。适配 Deekseep 所有 UI 和功能，支持分身环境。
 minApiVersion=102
