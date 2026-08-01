@@ -3779,7 +3779,8 @@ final class LocalApiGateway {
         } else if (lower.equals("glm-expert") || lower.equals("expert")) {
             nativeModel = "expert";
         } else {
-            throw new GatewayException(400, "model_not_found", "Unknown local model: " + requested);
+            // v2.0.5: 不审核模型名 — 用户提交什么模型就用什么
+            nativeModel = "default";
         }
         return new ModelSpec(nativeModel, reasoning, search);
     }
