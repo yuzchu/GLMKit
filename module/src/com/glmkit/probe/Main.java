@@ -1079,26 +1079,47 @@ public class Main extends XposedModule {
         hookLocalSessionDeletedFlow(cl);
         hookLocalSessionDeletedResponse(cl);
         hookActiveChatSessionCapture(cl);
-        hookProactiveVisibleThreadFilter(cl);
-        hookNativeUiHeartbeatCompletion(cl);
-        hookNativeSessionNavigator(cl);
+        // v3.7.0+ guard: UI hooks below rely on v2.2.x obfuscated class names (mc, tp, xa3, mq5,
+        // n51, rm5, etc.). On v3.7.0 these names are different — the hooks would either fail
+        // silently or, worse, match an unrelated class that shares the same short name and
+        // intercept the wrong method, causing crashes (team-mode sidebar) or broken native
+        // features (conversation grouping). Skip them entirely on unsupported generations.
+        boolean legacyUi = isLegacyUiAvailable(cl);
+        if (legacyUi) {
+            hookProactiveVisibleThreadFilter(cl);
+            hookNativeUiHeartbeatCompletion(cl);
+        } else {
+            log("skipping hookProactiveVisibleThreadFilter/hookNativeUiHeartbeatCompletion — legacy UI classes unavailable");
+        }
+        if (legacyUi) {
+            hookNativeSessionNavigator(cl);
+        } else {
+            log("skipping hookNativeSessionNavigator — legacy UI classes unavailable");
+        }
         hookHistoryLoadDiagnostics(cl);
         scheduleRealSessionProbe();
+        // Replace native sidebar texts (search placeholder, group label).
+        // Hooks system TextView — safe on any host version, no obfuscated names needed.
+        hookSidebarTextReplacements();
         // hook 导航变化，离开设置页时移除入口按钮
         hookSettingsNavigation(cl);
-        // ★ 侧栏聊天记录多选删除（modern Compose Hooker，手机端适配）
-        try { hookSidebarMultiSelectDelete(cl); } catch (Throwable t) { log("hookSidebarMultiSelectDelete wiring failed: " + t); }
-        try { hookSidebarToggleCleanup(cl); } catch (Throwable t) { log("hookSidebarToggleCleanup wiring failed: " + t); }
-        try {
-            hookChatBubbleCustomization(cl, false);
-        } catch (Throwable mainlandError) {
-            log("mainland bubble/input mapping unavailable, trying google-play: "
-                    + mainlandError);
+        if (legacyUi) {
+            // ★ 侧栏聊天记录多选删除（modern Compose Hooker，手机端适配）
+            try { hookSidebarMultiSelectDelete(cl); } catch (Throwable t) { log("hookSidebarMultiSelectDelete wiring failed: " + t); }
+            try { hookSidebarToggleCleanup(cl); } catch (Throwable t) { log("hookSidebarToggleCleanup wiring failed: " + t); }
             try {
-                hookChatBubbleCustomization(cl, true);
-            } catch (Throwable playError) {
-                log("hookChatBubbleCustomization wiring failed: " + playError);
+                hookChatBubbleCustomization(cl, false);
+            } catch (Throwable mainlandError) {
+                log("mainland bubble/input mapping unavailable, trying google-play: "
+                        + mainlandError);
+                try {
+                    hookChatBubbleCustomization(cl, true);
+                } catch (Throwable playError) {
+                    log("hookChatBubbleCustomization wiring failed: " + playError);
+                }
             }
+        } else {
+            log("skipping sidebar/bubble hooks — legacy UI classes unavailable (v3.7.0+)");
         }
 
         // hook 设置页主 Composable -> 显示 GLMKit 按钮
@@ -9323,7 +9344,141 @@ public class Main extends XposedModule {
         return false;
     }
 
+    /**
+     * Detect whether the host app's obfuscated UI classes from the v2.2.x / v2.3.0 generation
+     * are present.  GLM v3.7.0+ uses completely different R8 minification names, so the legacy
+     * sidebar / bubble / navigation hooks would either fail silently or — worse — match an
+     * unrelated class that happens to share a short name (e.g. "mc", "n51", "rm5") and intercept
+     * the wrong method, causing crashes (team-mode sidebar) or broken native features
+     * (conversation grouping).
+     *
+     * <p>When this returns {@code false} the caller must skip every hook that relies on legacy
+     * obfuscated names.  Core functionality (OkHttp capture, SSL socket, HttpURLConnection
+     * fallback, API gateway, model management, entry button via onResume) does not depend on
+     * these names and continues to work.</p>
+     */
+    private static volatile Boolean legacyUiCache;
+    private boolean isLegacyUiAvailable(ClassLoader cl) {
+        if (legacyUiCache != null) return legacyUiCache;
+        boolean ok = false;
+
+        // First line of defence: check the host app's version name.  v3.0+ uses a completely
+        // different R8 seed, so all legacy obfuscated names are wrong.  This avoids false
+        // positives where a short name like "mc" or "tp" happens to exist in v3.7.0 but
+        // refers to an unrelated class.
+        try {
+            if (appContext != null) {
+                String vn = appContext.getPackageManager()
+                        .getPackageInfo(appContext.getPackageName(), 0).versionName;
+                if (vn != null && vn.matches("[3-9]\\..*")) {
+                    log("isLegacyUiAvailable=false — host version " + vn + " is v3.0+");
+                    legacyUiCache = false;
+                    return false;
+                }
+                log("host version name: " + vn);
+            }
+        } catch (Throwable t) {
+            log("version check skipped: " + t);
+        }
+
+        // Second line of defence: verify the three most important UI classes exist.
+        try {
+            HostCompat.load(cl, "mc");
+            HostCompat.load(cl, "tp");
+            HostCompat.load(cl, "xa3");
+            ok = true;
+        } catch (Throwable t) {
+            log("legacy UI classes unavailable (host is v3.7.0+ or unknown generation): " + t);
+        }
+        legacyUiCache = ok;
+        log("isLegacyUiAvailable=" + ok + " generation=" + HostCompat.generationName());
+        return ok;
+    }
+
+    /**
+     * Hooks system-level TextView methods to replace specific native sidebar texts.
+     * Works on any host version because it hooks android.widget.TextView (system class),
+     * not obfuscated host classes.  Uses a thread-local guard to prevent recursion.
+     */
+    private void hookSidebarTextReplacements() {
+        final String OLD_HINT = "搜索会话的标题和内容";
+        final String NEW_HINT = "搜索标题和内容";
+        final String OLD_GROUP = "全部";
+        final String NEW_GROUP = "默认分组";
+
+        // Hook setHint(CharSequence) — replace overlong search placeholder
+        try {
+            Method setHint = TextView.class.getDeclaredMethod("setHint", CharSequence.class);
+            hook(setHint).intercept(new Hooker() {
+                @Override public Object intercept(Chain chain) throws Throwable {
+                    try {
+                        Object arg0 = chain.getArg(0);
+                        if (arg0 instanceof CharSequence) {
+                            String s = arg0.toString();
+                            if (s.contains(OLD_HINT)) {
+                                chain.getArgs().set(0, s.replace(OLD_HINT, NEW_HINT));
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                    return chain.proceed();
+                }
+            });
+            log("hooked TextView.setHint for sidebar search placeholder");
+        } catch (Throwable t) { log("hook setHint failed: " + t); }
+
+        // Hook setText(CharSequence) — replace "全部" → "默认分组" (conversation grouping label)
+        try {
+            Method setText = TextView.class.getDeclaredMethod("setText", CharSequence.class);
+            hook(setText).intercept(new Hooker() {
+                @Override public Object intercept(Chain chain) throws Throwable {
+                    try {
+                        Object arg0 = chain.getArg(0);
+                        if (arg0 instanceof CharSequence) {
+                            String s = arg0.toString();
+                            // Only replace exact "全部" (2 chars) — avoids matching
+                            // "全部移除", "全部本地会话" etc.
+                            if (s.length() == 2 && s.equals(OLD_GROUP)) {
+                                chain.getArgs().set(0, NEW_GROUP);
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                    return chain.proceed();
+                }
+            });
+            log("hooked TextView.setText for sidebar group label");
+        } catch (Throwable t) { log("hook setText failed: " + t); }
+
+        // Hook setText(CharSequence, BufferType) — same replacement for the typed overload
+        try {
+            Method setTextTyped = TextView.class.getDeclaredMethod(
+                    "setText", CharSequence.class, android.widget.TextView.BufferType.class);
+            hook(setTextTyped).intercept(new Hooker() {
+                @Override public Object intercept(Chain chain) throws Throwable {
+                    try {
+                        Object arg0 = chain.getArg(0);
+                        if (arg0 instanceof CharSequence) {
+                            String s = arg0.toString();
+                            if (s.length() == 2 && s.equals(OLD_GROUP)) {
+                                chain.getArgs().set(0, NEW_GROUP);
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                    return chain.proceed();
+                }
+            });
+            log("hooked TextView.setText(cs,type) for sidebar group label");
+        } catch (Throwable t) { log("hook setText(cs,type) failed: " + t); }
+    }
+
     private void hookSettingsNavigation(ClassLoader cl) {
+        // v3.7.0+: rm5/gf8 obfuscated names changed. Even the "specific" hooks (rm5.n with
+        // 2 params, gf8.A0 with 1 param) can match an unrelated class that shares the same
+        // short name, intercepting a critical method and causing crashes (team-mode sidebar).
+        // Skip the entire navigation hook on unsupported generations.
+        if (!isLegacyUiAvailable(cl)) {
+            log("skipping hookSettingsNavigation entirely — legacy UI classes unavailable (v3.7.0+)");
+            return;
+        }
         try {
             Class<?> nav = HostCompat.load(cl, "rm5");
             for (Method m : nav.getDeclaredMethods()) {
